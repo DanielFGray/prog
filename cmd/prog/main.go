@@ -59,11 +59,13 @@ var (
 	flagConceptsRelated  string
 	flagConceptsSummary  string
 	flagConceptsRename   string
+	flagConceptsStats    bool
 	flagContextConcept   []string
 	flagContextQuery     string
 	flagContextStale     bool
 	flagContextSummary   bool
 	flagContextID        string
+	flagContextJSON      bool
 	flagLearnDetail      string
 )
 
@@ -940,13 +942,14 @@ Examples:
 }
 
 var learnStaleCmd = &cobra.Command{
-	Use:   "stale <learning-id>",
-	Short: "Mark a learning as stale (outdated)",
-	Long: `Mark a learning as stale when it's outdated but still useful for reference.
+	Use:   "stale <learning-id> [learning-id...]",
+	Short: "Mark learnings as stale (outdated)",
+	Long: `Mark one or more learnings as stale when they're outdated but still useful for reference.
 
-Example:
-  prog learn stale lrn-abc123 --reason "Refactored in v2"`,
-	Args: cobra.ExactArgs(1),
+Examples:
+  prog learn stale lrn-abc123 --reason "Refactored in v2"
+  prog learn stale lrn-a lrn-b lrn-c --reason "Compacted into lrn-xyz"`,
+	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		database, err := openDB()
 		if err != nil {
@@ -954,16 +957,25 @@ Example:
 		}
 		defer func() { _ = database.Close() }()
 
-		if err := database.UpdateLearningStatus(args[0], model.LearningStatusStale); err != nil {
-			return err
+		for _, id := range args {
+			if err := database.UpdateLearningStatus(id, model.LearningStatusStale); err != nil {
+				return err
+			}
 		}
 
-		// Log reason if provided
-		if flagLearnStaleReason != "" {
-			// We could add a detail field update here, but for now just print
-			fmt.Printf("Marked %s as stale: %s\n", args[0], flagLearnStaleReason)
+		// Output
+		if len(args) == 1 {
+			if flagLearnStaleReason != "" {
+				fmt.Printf("Marked %s as stale: %s\n", args[0], flagLearnStaleReason)
+			} else {
+				fmt.Printf("Marked %s as stale\n", args[0])
+			}
 		} else {
-			fmt.Printf("Marked %s as stale\n", args[0])
+			if flagLearnStaleReason != "" {
+				fmt.Printf("Marked %d learnings as stale: %s\n", len(args), flagLearnStaleReason)
+			} else {
+				fmt.Printf("Marked %d learnings as stale\n", len(args))
+			}
 		}
 		return nil
 	},
@@ -1003,6 +1015,7 @@ Default sort is by learning count (most used first).
 Examples:
   prog concepts -p myproject                        # list concepts
   prog concepts -p myproject --recent               # sort by last updated
+  prog concepts -p myproject --stats                # show count and oldest age
   prog concepts --related ts-abc123                 # suggest concepts for a task
   prog concepts fts -p myproject --summary "..."    # set concept summary
   prog concepts fts -p myproject --rename "search"  # rename concept`,
@@ -1030,6 +1043,23 @@ Examples:
 				}
 				fmt.Printf("Renamed %s -> %s\n", args[0], flagConceptsRename)
 			}
+			return nil
+		}
+
+		// Stats mode
+		if flagConceptsStats {
+			if flagProject == "" {
+				return fmt.Errorf("project is required (-p)")
+			}
+			stats, err := database.ListConceptsWithStats(flagProject)
+			if err != nil {
+				return err
+			}
+			if len(stats) == 0 {
+				fmt.Println("No concepts")
+				return nil
+			}
+			printConceptsStats(stats)
 			return nil
 		}
 
@@ -1075,7 +1105,8 @@ Examples:
   prog context -q "rate limit" -p myproject          # full-text search
   prog context -c auth --summary -p myproject        # one-liner per learning
   prog context --id lrn-abc123                       # specific learning by ID
-  prog context -c auth --include-stale -p myproject  # include stale learnings`,
+  prog context -c auth --include-stale -p myproject  # include stale learnings
+  prog context -c auth --json -p myproject           # JSON output for agents`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		database, err := openDB()
 		if err != nil {
@@ -1088,6 +1119,9 @@ Examples:
 			learning, err := database.GetLearning(flagContextID)
 			if err != nil {
 				return err
+			}
+			if flagContextJSON {
+				return printLearningsJSON([]model.Learning{*learning})
 			}
 			printLearnings([]model.Learning{*learning})
 			return nil
@@ -1113,8 +1147,17 @@ Examples:
 		}
 
 		if len(learnings) == 0 {
+			if flagContextJSON {
+				fmt.Println("[]")
+				return nil
+			}
 			fmt.Println("No learnings found")
 			return nil
+		}
+
+		// JSON mode
+		if flagContextJSON {
+			return printLearningsJSON(learnings)
 		}
 
 		// Mode 2: Summary mode (one-liners)
@@ -1526,6 +1569,7 @@ func init() {
 	conceptsCmd.Flags().StringVar(&flagConceptsRelated, "related", "", "Suggest concepts related to a task")
 	conceptsCmd.Flags().StringVar(&flagConceptsSummary, "summary", "", "Set concept summary (requires concept name as argument)")
 	conceptsCmd.Flags().StringVar(&flagConceptsRename, "rename", "", "Rename concept (requires concept name as argument)")
+	conceptsCmd.Flags().BoolVar(&flagConceptsStats, "stats", false, "Show statistics (count and oldest learning age)")
 
 	// context flags
 	contextCmd.Flags().StringArrayVarP(&flagContextConcept, "concept", "c", nil, "Concept to retrieve learnings for (can be repeated)")
@@ -1533,6 +1577,7 @@ func init() {
 	contextCmd.Flags().BoolVar(&flagContextStale, "include-stale", false, "Include stale learnings in results")
 	contextCmd.Flags().BoolVar(&flagContextSummary, "summary", false, "Show one-liner per learning (no detail)")
 	contextCmd.Flags().StringVar(&flagContextID, "id", "", "Load specific learning by ID")
+	contextCmd.Flags().BoolVar(&flagContextJSON, "json", false, "Output as JSON for machine processing")
 
 	rootCmd.AddCommand(initCmd)
 	rootCmd.AddCommand(addCmd)
@@ -1703,6 +1748,29 @@ func printConceptsTable(concepts []model.Concept) {
 	}
 }
 
+func printConceptsStats(stats []db.ConceptStats) {
+	fmt.Printf("%-20s %6s  %s\n", "CONCEPT", "COUNT", "OLDEST")
+	for _, s := range stats {
+		oldest := "-"
+		if s.OldestAge != nil {
+			oldest = formatDurationShort(*s.OldestAge)
+		}
+		fmt.Printf("%-20s %6d  %s\n", s.Name, s.LearningCount, oldest)
+	}
+}
+
+func formatDurationShort(d time.Duration) string {
+	days := int(d.Hours() / 24)
+	if days > 0 {
+		return fmt.Sprintf("%dd", days)
+	}
+	hours := int(d.Hours())
+	if hours > 0 {
+		return fmt.Sprintf("%dh", hours)
+	}
+	return "<1h"
+}
+
 func printLearnings(learnings []model.Learning) {
 	for i, l := range learnings {
 		if i > 0 {
@@ -1735,6 +1803,42 @@ func printLearnings(learnings []model.Learning) {
 			fmt.Printf("Task: %s\n", *l.TaskID)
 		}
 	}
+}
+
+// LearningJSON is the JSON serialization format for learnings.
+type LearningJSON struct {
+	ID        string   `json:"id"`
+	Summary   string   `json:"summary"`
+	Detail    string   `json:"detail,omitempty"`
+	Concepts  []string `json:"concepts"`
+	Files     []string `json:"files,omitempty"`
+	CreatedAt string   `json:"created_at"`
+	Status    string   `json:"status"`
+}
+
+func printLearningsJSON(learnings []model.Learning) error {
+	output := make([]LearningJSON, 0, len(learnings))
+	for _, l := range learnings {
+		lj := LearningJSON{
+			ID:        l.ID,
+			Summary:   l.Summary,
+			Detail:    l.Detail,
+			Concepts:  l.Concepts,
+			Files:     l.Files,
+			CreatedAt: l.CreatedAt.Format(time.RFC3339),
+			Status:    string(l.Status),
+		}
+		if lj.Concepts == nil {
+			lj.Concepts = []string{}
+		}
+		output = append(output, lj)
+	}
+	b, err := json.MarshalIndent(output, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal JSON: %w", err)
+	}
+	fmt.Println(string(b))
+	return nil
 }
 
 func printLearningSummaries(learnings []model.Learning, requestedConcepts []string, conceptSummaries map[string]string) {

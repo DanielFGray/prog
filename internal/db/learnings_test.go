@@ -1043,3 +1043,155 @@ func TestSearchLearnings_NoResults(t *testing.T) {
 		t.Errorf("learnings count = %d, want 0", len(learnings))
 	}
 }
+
+// --- Concept Stats ---
+
+func TestListConceptsWithStats(t *testing.T) {
+	db := setupTestDB(t)
+
+	now := time.Now()
+	// Create learnings with different concepts at different times
+	learning1 := &model.Learning{
+		ID:        model.GenerateLearningID(),
+		Project:   "test",
+		CreatedAt: now.Add(-48 * time.Hour), // 2 days ago
+		UpdatedAt: now.Add(-48 * time.Hour),
+		Summary:   "Old auth learning",
+		Status:    model.LearningStatusActive,
+		Concepts:  []string{"auth"},
+	}
+	if err := db.CreateLearning(learning1); err != nil {
+		t.Fatalf("failed to create learning1: %v", err)
+	}
+
+	learning2 := &model.Learning{
+		ID:        model.GenerateLearningID(),
+		Project:   "test",
+		CreatedAt: now.Add(-1 * time.Hour), // 1 hour ago
+		UpdatedAt: now.Add(-1 * time.Hour),
+		Summary:   "Recent auth learning",
+		Status:    model.LearningStatusActive,
+		Concepts:  []string{"auth"},
+	}
+	if err := db.CreateLearning(learning2); err != nil {
+		t.Fatalf("failed to create learning2: %v", err)
+	}
+
+	learning3 := &model.Learning{
+		ID:        model.GenerateLearningID(),
+		Project:   "test",
+		CreatedAt: now.Add(-24 * time.Hour), // 1 day ago
+		UpdatedAt: now.Add(-24 * time.Hour),
+		Summary:   "Database learning",
+		Status:    model.LearningStatusActive,
+		Concepts:  []string{"database"},
+	}
+	if err := db.CreateLearning(learning3); err != nil {
+		t.Fatalf("failed to create learning3: %v", err)
+	}
+
+	stats, err := db.ListConceptsWithStats("test")
+	if err != nil {
+		t.Fatalf("failed to get stats: %v", err)
+	}
+
+	if len(stats) != 2 {
+		t.Fatalf("stats count = %d, want 2", len(stats))
+	}
+
+	// Should be sorted by count (auth has 2, database has 1)
+	if stats[0].Name != "auth" {
+		t.Errorf("first concept = %q, want 'auth'", stats[0].Name)
+	}
+	if stats[0].LearningCount != 2 {
+		t.Errorf("auth count = %d, want 2", stats[0].LearningCount)
+	}
+	if stats[0].OldestAge == nil {
+		t.Error("auth oldest age should not be nil")
+	} else {
+		// Should be approximately 48 hours
+		hours := int(stats[0].OldestAge.Hours())
+		if hours < 47 || hours > 49 {
+			t.Errorf("auth oldest age = %d hours, want ~48", hours)
+		}
+	}
+
+	if stats[1].Name != "database" {
+		t.Errorf("second concept = %q, want 'database'", stats[1].Name)
+	}
+	if stats[1].LearningCount != 1 {
+		t.Errorf("database count = %d, want 1", stats[1].LearningCount)
+	}
+}
+
+func TestListConceptsWithStats_ExcludesStale(t *testing.T) {
+	db := setupTestDB(t)
+
+	now := time.Now()
+	// Create active learning
+	learning1 := &model.Learning{
+		ID:        model.GenerateLearningID(),
+		Project:   "test",
+		CreatedAt: now,
+		UpdatedAt: now,
+		Summary:   "Active learning",
+		Status:    model.LearningStatusActive,
+		Concepts:  []string{"auth"},
+	}
+	if err := db.CreateLearning(learning1); err != nil {
+		t.Fatalf("failed to create learning1: %v", err)
+	}
+
+	// Create stale learning
+	learning2 := &model.Learning{
+		ID:        model.GenerateLearningID(),
+		Project:   "test",
+		CreatedAt: now.Add(-48 * time.Hour),
+		UpdatedAt: now.Add(-48 * time.Hour),
+		Summary:   "Stale learning",
+		Status:    model.LearningStatusStale,
+		Concepts:  []string{"auth"},
+	}
+	if err := db.CreateLearning(learning2); err != nil {
+		t.Fatalf("failed to create learning2: %v", err)
+	}
+
+	stats, err := db.ListConceptsWithStats("test")
+	if err != nil {
+		t.Fatalf("failed to get stats: %v", err)
+	}
+
+	if len(stats) != 1 {
+		t.Fatalf("stats count = %d, want 1", len(stats))
+	}
+
+	// Should only count active learning
+	if stats[0].LearningCount != 1 {
+		t.Errorf("auth count = %d, want 1 (stale excluded)", stats[0].LearningCount)
+	}
+}
+
+func TestListConceptsWithStats_EmptyConcept(t *testing.T) {
+	db := setupTestDB(t)
+
+	// Create a concept via EnsureConcept (no learnings)
+	if err := db.EnsureConcept("empty-concept", "test"); err != nil {
+		t.Fatalf("failed to ensure concept: %v", err)
+	}
+
+	stats, err := db.ListConceptsWithStats("test")
+	if err != nil {
+		t.Fatalf("failed to get stats: %v", err)
+	}
+
+	if len(stats) != 1 {
+		t.Fatalf("stats count = %d, want 1", len(stats))
+	}
+
+	if stats[0].LearningCount != 0 {
+		t.Errorf("count = %d, want 0", stats[0].LearningCount)
+	}
+	if stats[0].OldestAge != nil {
+		t.Errorf("oldest age should be nil for empty concept")
+	}
+}

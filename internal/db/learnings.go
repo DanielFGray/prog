@@ -439,6 +439,62 @@ func (db *DB) SearchLearnings(project string, query string, includeStale bool) (
 	return learnings, nil
 }
 
+// ConceptStats holds statistics for a concept.
+type ConceptStats struct {
+	Name         string
+	LearningCount int
+	OldestAge    *time.Duration // nil if no learnings
+}
+
+// ListConceptsWithStats returns all concepts with learning count and oldest learning age.
+func (db *DB) ListConceptsWithStats(project string) ([]ConceptStats, error) {
+	rows, err := db.Query(`
+		SELECT c.name,
+			COUNT(l.id) as count,
+			MIN(l.created_at) as oldest
+		FROM concepts c
+		LEFT JOIN learning_concepts lc ON lc.concept_id = c.id
+		LEFT JOIN learnings l ON l.id = lc.learning_id AND l.status = 'active'
+		WHERE c.project = ?
+		GROUP BY c.id
+		ORDER BY count DESC, c.name
+	`, project)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list concept stats: %w", err)
+	}
+	defer rows.Close()
+
+	var stats []ConceptStats
+	now := time.Now()
+	for rows.Next() {
+		var s ConceptStats
+		var oldestStr *string
+		if err := rows.Scan(&s.Name, &s.LearningCount, &oldestStr); err != nil {
+			return nil, fmt.Errorf("failed to scan concept stats: %w", err)
+		}
+		if oldestStr != nil && *oldestStr != "" {
+			// Parse the timestamp string - Go's default format with monotonic clock suffix
+			// Format: "2006-01-02 15:04:05.999999999 -0700 MST m=+0.000000000"
+			str := *oldestStr
+			// Strip monotonic clock suffix if present
+			if idx := strings.Index(str, " m="); idx > 0 {
+				str = str[:idx]
+			}
+			oldest, err := time.Parse("2006-01-02 15:04:05.999999999 -0700 MST", str)
+			if err != nil {
+				oldest, err = time.Parse(time.RFC3339Nano, str)
+			}
+			if err == nil {
+				age := now.Sub(oldest)
+				s.OldestAge = &age
+			}
+		}
+		stats = append(stats, s)
+	}
+
+	return stats, nil
+}
+
 // GetRelatedConcepts returns concepts that match keywords in a task's title/description.
 // Matches are case-insensitive and ranked by learning count.
 func (db *DB) GetRelatedConcepts(taskID string) ([]model.Concept, error) {
