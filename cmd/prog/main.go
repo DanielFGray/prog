@@ -268,7 +268,8 @@ Examples:
 var showCmd = &cobra.Command{
 	Use:   "show <id>",
 	Short: "Show task details",
-	Long: `Show full details for a task including description, logs, and dependencies.
+	Long: `Show full details for a task including description, logs, dependencies,
+and suggested concepts for context retrieval.
 
 Example:
   prog show ts-a1b2c3`,
@@ -295,7 +296,13 @@ Example:
 			return err
 		}
 
-		printItemDetail(item, logs, deps)
+		// Get related concepts for context suggestions
+		concepts, err := database.GetRelatedConcepts(args[0])
+		if err != nil {
+			return err
+		}
+
+		printItemDetail(item, logs, deps, concepts)
 		return nil
 	},
 }
@@ -1521,7 +1528,7 @@ func printReadyTable(items []model.Item) {
 	}
 }
 
-func printItemDetail(item *model.Item, logs []model.Log, deps []string) {
+func printItemDetail(item *model.Item, logs []model.Log, deps []string, concepts []model.Concept) {
 	fmt.Printf("ID:          %s\n", item.ID)
 	fmt.Printf("Type:        %s\n", item.Type)
 	fmt.Printf("Project:     %s\n", item.Project)
@@ -1548,6 +1555,20 @@ func printItemDetail(item *model.Item, logs []model.Log, deps []string) {
 		for _, log := range logs {
 			fmt.Printf("  [%s] %s\n", log.CreatedAt.Format("2006-01-02 15:04"), log.Message)
 		}
+	}
+
+	if len(concepts) > 0 {
+		fmt.Printf("\nSuggested context:\n")
+		var conceptFlags []string
+		for _, c := range concepts {
+			summary := c.Summary
+			if summary == "" {
+				summary = "(no summary)"
+			}
+			fmt.Printf("  %s (%d) - %s\n", c.Name, c.LearningCount, summary)
+			conceptFlags = append(conceptFlags, "-c "+c.Name)
+		}
+		fmt.Printf("\nLoad with: prog context %s -p %s --summary\n", strings.Join(conceptFlags, " "), item.Project)
 	}
 }
 

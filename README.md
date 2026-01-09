@@ -74,7 +74,7 @@ prog done ts-a1b2c3
 | `prog onboard` | Set up prog integration for AI agents |
 | `prog add <title>` | Create a task (returns ID) |
 | `prog list` | List all tasks |
-| `prog show <id>` | Show task details, logs, and dependencies |
+| `prog show <id>` | Show task details, logs, deps, suggested concepts |
 | `prog ready` | Show tasks ready for work (open + deps met) |
 | `prog status` | Project overview for agent spin-up |
 | `prog prime` | Output context for Claude Code hooks |
