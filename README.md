@@ -397,6 +397,18 @@ prog compact auth
 
 This keeps the knowledge base navigable as it grows.
 
+### Resources & Inspiration
+
+The context engine design draws from several projects and papers:
+
+- **[CASS Memory System](https://github.com/Dicklesworthstone/cass_memory_system)** — Lesson extraction and rule validation through evidence gates. Influenced our approach to learning quality (actionable, specific, pattern-based).
+
+- **[AgentFS](https://github.com/tursodatabase/agentfs)** — SQLite-based agent memory with audit trails. Validated our choice of SQLite for durability and the importance of linking learnings to tasks.
+
+- **[Dynamic Context Discovery](https://cursor.com/blog/dynamic-context-discovery)** (Cursor) — Two-phase retrieval with stubs in context, full content on-demand. Directly inspired our `--summary` → `--id` pattern for 46%+ token reduction.
+
+- **[Everything is Context](https://arxiv.org/abs/2512.05470)** (Xu et al., 2024) — File-system abstraction for context engineering. Reinforced concepts-over-files approach and the value of structured knowledge retrieval.
+
 ## Claude Code Integration
 
 The `prog onboard` command configures Claude Code hooks to inject workflow context at session start and before context compaction. This ensures agents maintain context about the prog workflow across sessions.
