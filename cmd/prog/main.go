@@ -68,6 +68,7 @@ var (
 	flagContextJSON      bool
 	flagLearnDetail      string
 	flagLabelsColor      string
+	flagAddLabels        []string
 )
 
 func openDB() (*db.DB, error) {
@@ -140,7 +141,8 @@ Examples:
   prog add "Auth system" -p myproject -e
   prog add "Critical fix" --priority 1
   prog add "Subtask" --parent ep-abc123
-  prog add "Dependency" --blocks ts-xyz789`,
+  prog add "Dependency" --blocks ts-xyz789
+  prog add "Bug fix" -p myproject -l bug -l urgent`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		database, err := openDB()
@@ -181,6 +183,13 @@ Examples:
 			// This new item blocks the specified item
 			// (the blocked item depends on this new one)
 			if err := database.AddDep(flagBlocks, item.ID); err != nil {
+				return err
+			}
+		}
+
+		// Add labels if specified
+		for _, labelName := range flagAddLabels {
+			if err := database.AddLabelToItem(item.ID, item.Project, labelName); err != nil {
 				return err
 			}
 		}
@@ -1953,6 +1962,7 @@ func init() {
 	addCmd.Flags().IntVar(&flagPriority, "priority", 2, "Priority (1=high, 2=medium, 3=low)")
 	addCmd.Flags().StringVar(&flagParent, "parent", "", "Parent epic ID")
 	addCmd.Flags().StringVar(&flagBlocks, "blocks", "", "ID of task this will block")
+	addCmd.Flags().StringArrayVarP(&flagAddLabels, "label", "l", nil, "Label to attach (can be repeated)")
 
 	// list flags
 	listCmd.Flags().StringVar(&flagStatus, "status", "", "Filter by status (open, in_progress, blocked, done, canceled)")
