@@ -1813,6 +1813,15 @@ func printPrimeContent(report *db.StatusReport) {
 This project uses 'prog' for cross-session task management.
 Run 'prog status' to see current state.
 
+## Starting Work
+
+When picking up a task:
+1. prog show <task>                 # See task + suggested concepts
+2. prog context -c X -c Y           # Load relevant concepts
+   prog context -c X --summary      # Or scan first if many learnings
+
+Load context that's relevant to your task. Don't skip it, don't load everything.
+
 ## SESSION CLOSE PROTOCOL
 
 Before ending ANY session, you MUST complete ALL of these steps:
@@ -1837,6 +1846,29 @@ Before ending ANY session, you MUST complete ALL of these steps:
 5. Update parent epic (if task is part of one):
    prog append <epic-id> "Completed X, next: Y"
 
+6. Reflect on learnings:
+   Ask: What would help the next agent on this codebase?
+   - What pattern or technique proved effective?
+   - What gotcha would trap someone unfamiliar?
+   - What's not obvious from reading the code?
+
+   Validate insights with the user before logging - they can confirm value and refine.
+
+   To log:
+     prog concepts                    # Check existing concepts first
+     prog learn "insight" -c concept  # Use existing concepts when possible
+     prog learn "insight" -c concept --detail "explanation"
+
+   Good learnings are specific and actionable:
+     ✓ "Schema migrations require built binary - go run doesn't embed assets"
+     ✓ "Use --summary to scan concepts first, full detail can overwhelm context"
+
+   Not learnings (use prog log instead):
+     ✗ "Fixed the auth bug"
+     ✗ "This file handles authentication"
+
+   For critical discoveries mid-session, log immediately.
+
 NEVER end a session without updating task state.
 Work is NOT complete until prog reflects reality.
 
@@ -1852,7 +1884,7 @@ Work is NOT complete until prog reflects reality.
 # Finding work
 prog status              # Overview
 prog ready               # Tasks ready to work on
-prog show <id>           # Full details
+prog show <id>           # Full details + suggested concepts
 
 # Working
 prog start <id>          # Claim a task
@@ -1866,6 +1898,12 @@ prog add "title" -e            # New epic
 
 # Editing
 prog append <id> "text"        # Add to description
+
+# Context retrieval
+prog context -c concept        # Load learnings for a concept
+prog context -c X --summary    # Scan one-liners first
+prog concepts                  # List available concepts
+prog learn "insight" -c X      # Log a learning
 
 # Filtering
 prog list -p myproject         # Filter by project

@@ -158,12 +158,36 @@ func TestPrintPrimeContent_EssentialCommands(t *testing.T) {
 		"prog block",
 		"prog add",
 		"prog append",
+		"prog context",
+		"prog concepts",
+		"prog learn",
 	}
 
 	for _, cmd := range commands {
 		if !strings.Contains(output, cmd) {
 			t.Errorf("missing command: %s", cmd)
 		}
+	}
+}
+
+func TestPrintPrimeContent_ContextRetrieval(t *testing.T) {
+	output := captureOutput(func() {
+		printPrimeContent(nil)
+	})
+
+	// Should contain Starting Work section
+	if !strings.Contains(output, "Starting Work") {
+		t.Error("missing Starting Work section")
+	}
+
+	// Should contain reflection step
+	if !strings.Contains(output, "Reflect on learnings") {
+		t.Error("missing reflection step in session close")
+	}
+
+	// Should contain learning quality guidance
+	if !strings.Contains(output, "Good learnings are specific") {
+		t.Error("missing learning quality guidance")
 	}
 }
 
