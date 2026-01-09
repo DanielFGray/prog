@@ -193,6 +193,45 @@ func TestUpdateLearningSummary_NotFound(t *testing.T) {
 	}
 }
 
+func TestUpdateLearningDetail(t *testing.T) {
+	db := setupTestDB(t)
+
+	now := time.Now()
+	learning := &model.Learning{
+		ID:        model.GenerateLearningID(),
+		Project:   "test",
+		CreatedAt: now,
+		UpdatedAt: now,
+		Summary:   "Test learning",
+		Detail:    "Original detail",
+		Status:    model.LearningStatusActive,
+	}
+
+	if err := db.CreateLearning(learning); err != nil {
+		t.Fatalf("failed to create learning: %v", err)
+	}
+
+	// Update detail
+	newDetail := "Updated detail with more context"
+	if err := db.UpdateLearningDetail(learning.ID, newDetail); err != nil {
+		t.Fatalf("failed to update detail: %v", err)
+	}
+
+	got, _ := db.GetLearning(learning.ID)
+	if got.Detail != newDetail {
+		t.Errorf("detail = %q, want %q", got.Detail, newDetail)
+	}
+}
+
+func TestUpdateLearningDetail_NotFound(t *testing.T) {
+	db := setupTestDB(t)
+
+	err := db.UpdateLearningDetail("lrn-nonexistent", "New detail")
+	if err == nil {
+		t.Error("expected error for nonexistent learning")
+	}
+}
+
 func TestUpdateLearningStatus(t *testing.T) {
 	db := setupTestDB(t)
 

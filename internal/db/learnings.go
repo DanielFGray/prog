@@ -229,6 +229,22 @@ func (db *DB) UpdateLearningStatus(id string, status model.LearningStatus) error
 	return nil
 }
 
+// UpdateLearningDetail updates a learning's detail.
+func (db *DB) UpdateLearningDetail(id, detail string) error {
+	result, err := db.Exec(`
+		UPDATE learnings SET detail = ?, updated_at = ?
+		WHERE id = ?
+	`, detail, time.Now(), id)
+	if err != nil {
+		return fmt.Errorf("failed to update learning detail: %w", err)
+	}
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("learning not found: %s", id)
+	}
+	return nil
+}
+
 // DeleteLearning removes a learning and its concept associations.
 func (db *DB) DeleteLearning(id string) error {
 	tx, err := db.Begin()

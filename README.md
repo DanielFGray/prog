@@ -299,7 +299,7 @@ Each phase filters, so agents only load what's actually relevant.
 | `prog context -c <name>` | Retrieve learnings by concept(s) |
 | `prog context -q <query>` | Full-text search on learnings |
 | `prog learn <summary>` | Log a new learning |
-| `prog learn edit <id>` | Edit a learning's summary |
+| `prog learn edit <id>` | Edit a learning's summary or detail |
 | `prog learn stale <id>` | Mark learning as outdated |
 | `prog learn rm <id>` | Delete a learning |
 
@@ -337,7 +337,7 @@ prog learn "Token refresh has race condition" -c auth -c concurrency -p myprojec
 # With related files
 prog learn "Config loads from env first, then file" -c config -p myproject -f config.go
 
-# With full detail (coming soon)
+# With full detail
 prog learn "summary" -c concept -p myproject --detail "full explanation..."
 ```
 

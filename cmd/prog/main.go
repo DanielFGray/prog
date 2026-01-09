@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -52,6 +53,7 @@ var (
 	flagLearnConcept     []string
 	flagLearnFile        []string
 	flagLearnEditSummary string
+	flagLearnEditDetail  string
 	flagLearnStaleReason string
 	flagConceptsRecent   bool
 	flagConceptsRelated  string
@@ -60,6 +62,9 @@ var (
 	flagContextConcept   []string
 	flagContextQuery     string
 	flagContextStale     bool
+	flagContextSummary   bool
+	flagContextID        string
+	flagLearnDetail      string
 )
 
 func openDB() (*db.DB, error) {
@@ -826,7 +831,9 @@ If a task is in progress for the project, the learning is linked to it.
 
 Examples:
   prog learn "Token refresh has race condition" -p myproject -c auth -c concurrency
-  prog learn "Config loaded from env first" -p myproject -c config -f config.go`,
+  prog learn "Config loaded from env first" -p myproject -c config -f config.go
+  prog learn "Token refresh issue" -c auth -p myproject --detail "The mutex only protects..."
+  echo "multi-line detail" | prog learn "summary" -c auth -p myproject --detail -`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Validate required flags
@@ -848,6 +855,16 @@ Examples:
 		// Get current in-progress task for this project
 		taskID, _ := database.GetCurrentTaskID(project)
 
+		// Handle detail from stdin
+		detail := flagLearnDetail
+		if detail == "-" {
+			data, err := io.ReadAll(os.Stdin)
+			if err != nil {
+				return fmt.Errorf("failed to read from stdin: %w", err)
+			}
+			detail = strings.TrimSpace(string(data))
+		}
+
 		now := time.Now()
 		learning := &model.Learning{
 			ID:        model.GenerateLearningID(),
@@ -856,6 +873,7 @@ Examples:
 			UpdatedAt: now,
 			TaskID:    taskID,
 			Summary:   strings.Join(args, " "),
+			Detail:    detail,
 			Status:    model.LearningStatusActive,
 			Concepts:  flagLearnConcept,
 			Files:     flagLearnFile,
@@ -877,15 +895,17 @@ Examples:
 
 var learnEditCmd = &cobra.Command{
 	Use:   "edit <learning-id>",
-	Short: "Edit a learning's summary",
-	Long: `Edit an existing learning's summary.
+	Short: "Edit a learning's summary or detail",
+	Long: `Edit an existing learning's summary or detail.
 
-Example:
-  prog learn edit lrn-abc123 --summary "Updated summary"`,
+Examples:
+  prog learn edit lrn-abc123 --summary "Updated summary"
+  prog learn edit lrn-abc123 --detail "Full context explanation"
+  echo "multi-line" | prog learn edit lrn-abc123 --detail -`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if flagLearnEditSummary == "" {
-			return fmt.Errorf("--summary is required")
+		if flagLearnEditSummary == "" && flagLearnEditDetail == "" {
+			return fmt.Errorf("--summary or --detail is required")
 		}
 
 		database, err := openDB()
@@ -894,9 +914,26 @@ Example:
 		}
 		defer func() { _ = database.Close() }()
 
-		if err := database.UpdateLearningSummary(args[0], flagLearnEditSummary); err != nil {
-			return err
+		if flagLearnEditSummary != "" {
+			if err := database.UpdateLearningSummary(args[0], flagLearnEditSummary); err != nil {
+				return err
+			}
 		}
+
+		if flagLearnEditDetail != "" {
+			detail := flagLearnEditDetail
+			if detail == "-" {
+				data, err := io.ReadAll(os.Stdin)
+				if err != nil {
+					return fmt.Errorf("failed to read from stdin: %w", err)
+				}
+				detail = strings.TrimSpace(string(data))
+			}
+			if err := database.UpdateLearningDetail(args[0], detail); err != nil {
+				return err
+			}
+		}
+
 		fmt.Printf("Updated %s\n", args[0])
 		return nil
 	},
@@ -1029,27 +1066,40 @@ Examples:
 var contextCmd = &cobra.Command{
 	Use:   "context",
 	Short: "Retrieve learnings for context",
-	Long: `Retrieve learnings by concept or full-text search.
+	Long: `Retrieve learnings by concept, full-text search, or specific ID.
 
 Use this to load relevant context before starting work on a task.
 
 Examples:
   prog context -c auth -c concurrency -p myproject   # by concepts
   prog context -q "rate limit" -p myproject          # full-text search
+  prog context -c auth --summary -p myproject        # one-liner per learning
+  prog context --id lrn-abc123                       # specific learning by ID
   prog context -c auth --include-stale -p myproject  # include stale learnings`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if flagProject == "" {
-			return fmt.Errorf("project is required (-p)")
-		}
-		if len(flagContextConcept) == 0 && flagContextQuery == "" {
-			return fmt.Errorf("specify concepts (-c) or query (-q)")
-		}
-
 		database, err := openDB()
 		if err != nil {
 			return err
 		}
 		defer func() { _ = database.Close() }()
+
+		// Mode 1: Specific learning by ID
+		if flagContextID != "" {
+			learning, err := database.GetLearning(flagContextID)
+			if err != nil {
+				return err
+			}
+			printLearnings([]model.Learning{*learning})
+			return nil
+		}
+
+		// Modes 2 & 3 require project
+		if flagProject == "" {
+			return fmt.Errorf("project is required (-p) or use --id")
+		}
+		if len(flagContextConcept) == 0 && flagContextQuery == "" {
+			return fmt.Errorf("specify concepts (-c), query (-q), or --id")
+		}
 
 		var learnings []model.Learning
 
@@ -1067,6 +1117,19 @@ Examples:
 			return nil
 		}
 
+		// Mode 2: Summary mode (one-liners)
+		if flagContextSummary {
+			// Get concept summaries for header
+			concepts, _ := database.ListConcepts(flagProject, false)
+			conceptMap := make(map[string]string)
+			for _, c := range concepts {
+				conceptMap[c.Name] = c.Summary
+			}
+			printLearningSummaries(learnings, flagContextConcept, conceptMap)
+			return nil
+		}
+
+		// Mode 3: Full output
 		printLearnings(learnings)
 		return nil
 	},
@@ -1444,6 +1507,7 @@ func init() {
 	// learn flags
 	learnCmd.Flags().StringArrayVarP(&flagLearnConcept, "concept", "c", nil, "Concept to tag this learning with (can be repeated)")
 	learnCmd.Flags().StringArrayVarP(&flagLearnFile, "file", "f", nil, "Related file (can be repeated)")
+	learnCmd.Flags().StringVar(&flagLearnDetail, "detail", "", "Full context/explanation (use '-' for stdin)")
 
 	// learn subcommands
 	learnCmd.AddCommand(learnEditCmd)
@@ -1452,6 +1516,7 @@ func init() {
 
 	// learn edit flags
 	learnEditCmd.Flags().StringVar(&flagLearnEditSummary, "summary", "", "New summary for the learning")
+	learnEditCmd.Flags().StringVar(&flagLearnEditDetail, "detail", "", "New detail for the learning (use '-' for stdin)")
 
 	// learn stale flags
 	learnStaleCmd.Flags().StringVar(&flagLearnStaleReason, "reason", "", "Reason for marking as stale")
@@ -1466,6 +1531,8 @@ func init() {
 	contextCmd.Flags().StringArrayVarP(&flagContextConcept, "concept", "c", nil, "Concept to retrieve learnings for (can be repeated)")
 	contextCmd.Flags().StringVarP(&flagContextQuery, "query", "q", "", "Full-text search query")
 	contextCmd.Flags().BoolVar(&flagContextStale, "include-stale", false, "Include stale learnings in results")
+	contextCmd.Flags().BoolVar(&flagContextSummary, "summary", false, "Show one-liner per learning (no detail)")
+	contextCmd.Flags().StringVar(&flagContextID, "id", "", "Load specific learning by ID")
 
 	rootCmd.AddCommand(initCmd)
 	rootCmd.AddCommand(addCmd)
@@ -1667,6 +1734,29 @@ func printLearnings(learnings []model.Learning) {
 		if l.TaskID != nil {
 			fmt.Printf("Task: %s\n", *l.TaskID)
 		}
+	}
+}
+
+func printLearningSummaries(learnings []model.Learning, requestedConcepts []string, conceptSummaries map[string]string) {
+	// Print concept headers with summaries
+	for _, conceptName := range requestedConcepts {
+		summary := conceptSummaries[conceptName]
+		if summary == "" {
+			summary = "(no summary)"
+		}
+		fmt.Printf("%s: %s\n", conceptName, summary)
+	}
+	if len(requestedConcepts) > 0 {
+		fmt.Println()
+	}
+
+	// Print one-liner per learning
+	for _, l := range learnings {
+		status := ""
+		if l.Status == model.LearningStatusStale {
+			status = " [stale]"
+		}
+		fmt.Printf("  %s: %s%s\n", l.ID, l.Summary, status)
 	}
 }
 
