@@ -174,14 +174,12 @@ func TestPrintPrimeContent_ContextRetrieval(t *testing.T) {
 		t.Error("missing Starting Work section")
 	}
 
-	// Should contain reflection step
-	if !strings.Contains(output, "Reflect on learnings") {
-		t.Error("missing reflection step in session close")
+	// Should indicate that prog done prompts for reflection
+	if !strings.Contains(output, "prog done") {
+		t.Error("missing prog done command")
 	}
-
-	// Should contain learning quality guidance
-	if !strings.Contains(output, "Good learnings are specific") {
-		t.Error("missing learning quality guidance")
+	if !strings.Contains(output, "will prompt for reflection") {
+		t.Error("should indicate prog done prompts for reflection")
 	}
 }
 

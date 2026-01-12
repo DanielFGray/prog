@@ -392,6 +392,11 @@ var doneCmd = &cobra.Command{
 		}
 		fmt.Printf("Completed %s\n", args[0])
 
+		// Prompt reflection
+		fmt.Println(`
+Reflect: What would help the next agent? (See instructions for guidance)
+  prog learn "summary" -c concept --detail "explanation"`)
+
 		// Backup after successful mutation
 		database.BackupQuiet()
 
@@ -2527,7 +2532,7 @@ Before ending ANY session, you MUST complete ALL of these steps:
    Run the relevant commands to confirm outputs match the code.
 
 3. Update task status:
-   - prog done <id>     # if complete
+   - prog done <id>     # if complete (will prompt for reflection)
    - prog block <id> "reason"  # if blocked
 
 4. Add handoff context for next agent:
@@ -2536,28 +2541,31 @@ Before ending ANY session, you MUST complete ALL of these steps:
 5. Update parent epic (if task is part of one):
    prog append <epic-id> "Completed X, next: Y"
 
-6. Reflect on learnings:
-   Ask: What would help the next agent on this codebase?
-   - What pattern or technique proved effective?
-   - What gotcha would trap someone unfamiliar?
-   - What's not obvious from reading the code?
+## Logging Learnings
 
-   Validate insights with the user before logging - they can confirm value and refine.
+When prog done prompts for reflection, ask: What would help the next agent?
+  - What pattern or technique proved effective?
+  - What gotcha would trap someone unfamiliar?
+  - What's not obvious from reading the code?
 
-   To log:
-     prog concepts                    # Check existing concepts first
-     prog learn "insight" -c concept  # Use existing concepts when possible
-     prog learn "insight" -c concept --detail "explanation"
+Validate insights with the user before logging.
 
-   Good learnings are specific and actionable:
-     ✓ "Schema migrations require built binary - go run doesn't embed assets"
-     ✓ "Use --summary to scan concepts first, full detail can overwhelm context"
+To log (ALWAYS include both summary AND detail):
+  prog concepts                              # Check existing concepts first
+  prog learn "summary" -c concept --detail "full explanation"
 
-   Not learnings (use prog log instead):
-     ✗ "Fixed the auth bug"
-     ✗ "This file handles authentication"
+Why both? Two-phase retrieval:
+  - Summary: one-liner for scanning/discovery
+  - Detail: full context when selected
+  Without detail, future agents get only the one-liner.
 
-   For critical discoveries mid-session, log immediately.
+Good learnings are specific and actionable:
+  ✓ prog learn "Schema migrations need built binary" -c database \
+      --detail "go run doesn't embed assets; must use go build first"
+
+Not learnings (use prog log instead):
+  ✗ "Fixed the auth bug"
+  ✗ "This file handles authentication"
 
 NEVER end a session without updating task state.
 Work is NOT complete until prog reflects reality.
@@ -2595,7 +2603,7 @@ prog label <id> <name>         # Add label to task
 prog context -c concept        # Load learnings for a concept
 prog context -c X --summary    # Scan one-liners first
 prog concepts                  # List available concepts
-prog learn "insight" -c X      # Log a learning
+prog learn "summary" -c X --detail "explanation"  # Log with both parts
 
 # Filtering
 prog list -p myproject         # Filter by project
