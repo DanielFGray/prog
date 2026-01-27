@@ -3,6 +3,8 @@ version: 2
 builds:
   - main: ./cmd/prog
     binary: prog
+    ldflags:
+      - -s -w -X main.version={{.Version}}
     goos:
       - linux
       - darwin

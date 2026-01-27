@@ -16,6 +16,9 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// version is set by goreleaser via ldflags
+var version = "dev"
+
 // ClaudeSettings represents ~/.claude/settings.json structure
 type ClaudeSettings struct {
 	Hooks          map[string][]HookMatcher `json:"hooks,omitempty"`
@@ -90,8 +93,9 @@ func openDB() (*db.DB, error) {
 }
 
 var rootCmd = &cobra.Command{
-	Use:   "prog",
-	Short: "Lightweight task management for agents",
+	Use:     "prog",
+	Short:   "Lightweight task management for agents",
+	Version: version,
 	Long: `A CLI for managing tasks, epics, and dependencies.
 Designed for AI agents to track work across sessions.
 
