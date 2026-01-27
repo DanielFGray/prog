@@ -1761,22 +1761,14 @@ Example hook configuration in Claude Code settings:
 		database, err := openDB()
 		if err != nil {
 			// Still output prime content even if DB fails
-			printPrimeContent(nil, nil)
+			printPrimeContent(nil)
 			return nil
 		}
 		defer func() { _ = database.Close() }()
 
 		report, _ := database.ProjectStatus("")
 
-		// Get all projects to check compaction candidates
-		projects, _ := database.ListProjects()
-		var allStats []db.ConceptStats
-		for _, p := range projects {
-			stats, _ := database.ListConceptsWithStats(p)
-			allStats = append(allStats, stats...)
-		}
-
-		printPrimeContent(report, allStats)
+		printPrimeContent(report)
 		return nil
 	},
 }
@@ -2502,7 +2494,7 @@ func printDepGraph(edges []db.DepEdge) {
 	}
 }
 
-func printPrimeContent(report *db.StatusReport, stats []db.ConceptStats) {
+func printPrimeContent(report *db.StatusReport) {
 	fmt.Println(`# Prog CLI Context
 
 This project uses 'prog' for cross-session task management.
@@ -2610,44 +2602,6 @@ prog list -p myproject         # Filter by project
 prog list --status open        # Filter by status
 prog list -l bug -l urgent     # Filter by labels (AND)
 prog ready -p myproject        # Ready in project`)
-
-	// Check for compaction candidates
-	var highCount []db.ConceptStats
-	var oldLearnings []db.ConceptStats
-	sevenDays := 7 * 24 * time.Hour
-
-	for _, s := range stats {
-		if s.LearningCount >= 5 {
-			highCount = append(highCount, s)
-		}
-		if s.OldestAge != nil && *s.OldestAge > sevenDays && s.LearningCount > 0 {
-			oldLearnings = append(oldLearnings, s)
-		}
-	}
-
-	if len(highCount) > 0 || len(oldLearnings) > 0 {
-		fmt.Println(`
-
-## Maintenance`)
-
-		if len(highCount) > 0 {
-			fmt.Println("\nConcepts with 5+ learnings (check for redundancy):")
-			for _, c := range highCount {
-				fmt.Printf("  %s (%d learnings)\n", c.Name, c.LearningCount)
-			}
-		}
-
-		if len(oldLearnings) > 0 {
-			fmt.Println("\nConcepts with old learnings (check for staleness):")
-			for _, c := range oldLearnings {
-				oldest := formatDurationShort(*c.OldestAge)
-				fmt.Printf("  %s (oldest: %s)\n", c.Name, oldest)
-			}
-		}
-
-		fmt.Println(`
-Run 'prog compact' for compaction guidance.`)
-	}
 
 	fmt.Println("\n## Current State")
 
