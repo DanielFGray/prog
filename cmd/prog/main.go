@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1078,6 +1079,38 @@ Example:
 			return err
 		}
 		fmt.Printf("%s is now in project %s\n", args[0], args[1])
+		return nil
+	},
+}
+
+var priorityCmd = &cobra.Command{
+	Use:   "priority <id> <1|2|3>",
+	Short: "Set a task's priority",
+	Long: `Set or change the priority for a task.
+
+Priority values: 1 = high, 2 = medium, 3 = low.
+
+Example:
+  prog priority ts-a1b2c3 1
+  # ts-a1b2c3 is now priority 1 (high)`,
+	Args: cobra.ExactArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		database, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = database.Close() }()
+
+		priority, err := strconv.Atoi(args[1])
+		if err != nil {
+			return fmt.Errorf("priority must be a number (1, 2, or 3), got %q", args[1])
+		}
+
+		if err := database.SetPriority(args[0], priority); err != nil {
+			return err
+		}
+		labels := map[int]string{1: "high", 2: "medium", 3: "low"}
+		fmt.Printf("%s is now priority %d (%s)\n", args[0], priority, labels[priority])
 		return nil
 	},
 }
@@ -2381,6 +2414,7 @@ func init() {
 	rootCmd.AddCommand(editCmd)
 	rootCmd.AddCommand(parentCmd)
 	rootCmd.AddCommand(projectCmd)
+	rootCmd.AddCommand(priorityCmd)
 	rootCmd.AddCommand(blocksCmd)
 	rootCmd.AddCommand(labelCmd)
 	rootCmd.AddCommand(unlabelCmd)

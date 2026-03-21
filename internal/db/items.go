@@ -368,6 +368,26 @@ func (db *DB) applyDerivedEpicStatus(item *model.Item) error {
 	return nil
 }
 
+// SetPriority changes an item's priority.
+func (db *DB) SetPriority(id string, priority int) error {
+	if priority < 1 || priority > 3 {
+		return fmt.Errorf("invalid priority %d: must be 1 (high), 2 (medium), or 3 (low)", priority)
+	}
+
+	result, err := db.Exec(`
+		UPDATE items SET priority = ?, updated_at = ? WHERE id = ?`,
+		priority, time.Now(), id)
+	if err != nil {
+		return fmt.Errorf("failed to set priority: %w", err)
+	}
+
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("item not found: %s (use 'prog list' to see available items)", id)
+	}
+	return nil
+}
+
 // DeleteItem removes an item and its associated logs and dependencies.
 func (db *DB) DeleteItem(id string) error {
 	// Check if item exists first
