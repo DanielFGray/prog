@@ -108,6 +108,7 @@ prog done ts-a1b2c3
 | `prog blocks <id> <other>` | Add blocking relationship (other blocked until id done) |
 | `prog graph` | Show dependency graph |
 | `prog projects` | List all projects |
+| `prog projects rename <old> <new>` | Rename or merge a project |
 | `prog add -e <title>` | Create an epic instead of task |
 
 ### Labels

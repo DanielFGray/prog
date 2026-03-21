@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"time"
 
 	"github.com/baiirun/prog/internal/model"
 )
@@ -298,6 +299,99 @@ func (db *DB) ListProjects() ([]string, error) {
 		projects = append(projects, name)
 	}
 	return projects, rows.Err()
+}
+
+// RenameProject renames a project. If the target already exists, it merges
+// all items into the target and deletes the source project.
+func (db *DB) RenameProject(oldName, newName string) error {
+	if oldName == newName {
+		return nil
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// Check if old project exists
+	var exists bool
+	err = tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM projects WHERE name = ?)`, oldName).Scan(&exists)
+	if err != nil {
+		return fmt.Errorf("failed to check project: %w", err)
+	}
+	if !exists {
+		return fmt.Errorf("project not found: %s", oldName)
+	}
+
+	// Check if target exists (merge vs rename)
+	var targetExists bool
+	err = tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM projects WHERE name = ?)`, newName).Scan(&targetExists)
+	if err != nil {
+		return fmt.Errorf("failed to check target project: %w", err)
+	}
+
+	now := time.Now()
+
+	// Update items
+	_, err = tx.Exec(`UPDATE items SET project = ?, updated_at = ? WHERE project = ?`, newName, now, oldName)
+	if err != nil {
+		return fmt.Errorf("failed to update items: %w", err)
+	}
+
+	// Update labels (skip if label name already exists in target)
+	_, err = tx.Exec(`
+		UPDATE labels SET project = ?, updated_at = ?
+		WHERE project = ?
+		AND name NOT IN (SELECT name FROM labels WHERE project = ?)
+	`, newName, now, oldName, newName)
+	if err != nil {
+		return fmt.Errorf("failed to update labels: %w", err)
+	}
+	// Delete remaining labels (duplicates that couldn't move)
+	_, err = tx.Exec(`DELETE FROM labels WHERE project = ?`, oldName)
+	if err != nil {
+		return fmt.Errorf("failed to delete duplicate labels: %w", err)
+	}
+
+	// Update learnings
+	_, err = tx.Exec(`UPDATE learnings SET project = ?, updated_at = ? WHERE project = ?`, newName, now, oldName)
+	if err != nil {
+		return fmt.Errorf("failed to update learnings: %w", err)
+	}
+
+	// Update concepts (skip if concept name already exists in target, uses last_updated column)
+	_, err = tx.Exec(`
+		UPDATE concepts SET project = ?, last_updated = ?
+		WHERE project = ?
+		AND name NOT IN (SELECT name FROM concepts WHERE project = ?)
+	`, newName, now, oldName, newName)
+	if err != nil {
+		return fmt.Errorf("failed to update concepts: %w", err)
+	}
+	// Delete remaining concepts (duplicates that couldn't move)
+	_, err = tx.Exec(`DELETE FROM concepts WHERE project = ?`, oldName)
+	if err != nil {
+		return fmt.Errorf("failed to delete duplicate concepts: %w", err)
+	}
+
+	// Note: deps table has no project column - it references items directly
+
+	// Delete old project
+	_, err = tx.Exec(`DELETE FROM projects WHERE name = ?`, oldName)
+	if err != nil {
+		return fmt.Errorf("failed to delete old project: %w", err)
+	}
+
+	// Ensure target project exists
+	if !targetExists {
+		_, err = tx.Exec(`INSERT INTO projects (name, created_at, updated_at) VALUES (?, ?, ?)`, newName, now, now)
+		if err != nil {
+			return fmt.Errorf("failed to create target project: %w", err)
+		}
+	}
+
+	return tx.Commit()
 }
 
 // queryItems is a helper to scan item rows.

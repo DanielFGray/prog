@@ -794,6 +794,33 @@ var projectsCmd = &cobra.Command{
 	},
 }
 
+var projectsRenameCmd = &cobra.Command{
+	Use:   "rename <old-name> <new-name>",
+	Short: "Rename or merge a project",
+	Long: `Rename a project. If the target already exists, merges all items into it.
+
+Merging moves all items, labels, learnings, and concepts to the target project
+and deletes the source. Duplicate labels/concepts are skipped (target wins).
+
+Examples:
+  prog projects rename old-name new-name    # simple rename
+  prog projects rename myproject unified    # merge into existing 'unified'`,
+	Args: cobra.ExactArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		database, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = database.Close() }()
+
+		if err := database.RenameProject(args[0], args[1]); err != nil {
+			return err
+		}
+		fmt.Printf("Renamed project: %s -> %s\n", args[0], args[1])
+		return nil
+	},
+}
+
 var statusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Show project status overview",
@@ -2407,6 +2434,10 @@ func init() {
 	rootCmd.AddCommand(deleteCmd)
 	rootCmd.AddCommand(logCmd)
 	rootCmd.AddCommand(statusCmd)
+
+	// projects subcommands
+	projectsCmd.AddCommand(projectsRenameCmd)
+
 	rootCmd.AddCommand(projectsCmd)
 	rootCmd.AddCommand(graphCmd)
 	rootCmd.AddCommand(appendCmd)
