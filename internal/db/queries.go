@@ -348,7 +348,26 @@ func (db *DB) RenameProject(oldName, newName string) error {
 	if err != nil {
 		return fmt.Errorf("failed to update labels: %w", err)
 	}
-	// Delete remaining labels (duplicates that couldn't move)
+	// Before deleting duplicate labels, repoint item_labels to target's label
+	_, err = tx.Exec(`
+		INSERT OR IGNORE INTO item_labels (item_id, label_id)
+		SELECT il.item_id, dst.id
+		FROM item_labels il
+		JOIN labels src ON il.label_id = src.id AND src.project = ?
+		JOIN labels dst ON dst.name = src.name AND dst.project = ?
+	`, oldName, newName)
+	if err != nil {
+		return fmt.Errorf("failed to reassociate item labels: %w", err)
+	}
+	// Delete item_labels referencing the old duplicate labels
+	_, err = tx.Exec(`
+		DELETE FROM item_labels WHERE label_id IN (
+			SELECT id FROM labels WHERE project = ?
+		)
+	`, oldName)
+	if err != nil {
+		return fmt.Errorf("failed to delete old item label refs: %w", err)
+	}
 	_, err = tx.Exec(`DELETE FROM labels WHERE project = ?`, oldName)
 	if err != nil {
 		return fmt.Errorf("failed to delete duplicate labels: %w", err)
