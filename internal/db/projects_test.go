@@ -188,3 +188,51 @@ func TestRenameProjectMerge(t *testing.T) {
 		t.Errorf("expected 2 items in project2 after merge, got %d", len(items))
 	}
 }
+
+// TestRenameProjectLeavesKnowledgeAlone pins the consequence of making
+// knowledge global: a project rename touches items and labels only, and the
+// learnings and concepts recorded while that project existed stay reachable
+// under their own names.
+func TestRenameProjectLeavesKnowledgeAlone(t *testing.T) {
+	db := setupTestDB(t)
+
+	if err := db.EnsureProject("old-name"); err != nil {
+		t.Fatalf("failed to ensure project: %v", err)
+	}
+
+	now := time.Now()
+	learning := &model.Learning{
+		ID:        model.GenerateLearningID(),
+		CreatedAt: now,
+		UpdatedAt: now,
+		Summary:   "Knowledge outlives the project it was found in",
+		Status:    model.LearningStatusActive,
+		Concepts:  []string{"auth"},
+	}
+	if err := db.CreateLearning(learning); err != nil {
+		t.Fatalf("failed to create learning: %v", err)
+	}
+
+	if err := db.RenameProject("old-name", "new-name"); err != nil {
+		t.Fatalf("failed to rename project: %v", err)
+	}
+
+	concepts, err := db.ListConcepts(false)
+	if err != nil {
+		t.Fatalf("failed to list concepts: %v", err)
+	}
+	if len(concepts) != 1 || concepts[0].Name != "auth" {
+		t.Fatalf("concepts = %v, want a single concept named auth", concepts)
+	}
+	if concepts[0].LearningCount != 1 {
+		t.Errorf("auth learning count = %d, want 1", concepts[0].LearningCount)
+	}
+
+	found, err := db.GetLearningsByConcepts([]string{"auth"}, false)
+	if err != nil {
+		t.Fatalf("failed to get learnings by concept: %v", err)
+	}
+	if len(found) != 1 || found[0].ID != learning.ID {
+		t.Errorf("learnings = %v, want the one created before the rename", found)
+	}
+}

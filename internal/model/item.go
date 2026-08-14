@@ -65,6 +65,13 @@ type Item struct {
 	Labels           []string // Attached label names (populated separately)
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
+
+	// LastActivityAt is the later of UpdatedAt and the item's newest log entry.
+	// Derived at query time and never stored: adding a log is activity on the
+	// item, but logs live in their own table and do not touch items.updated_at.
+	// Deciding whether a claim has gone stale needs this, not UpdatedAt, which
+	// on an in-progress task only records when the task was claimed.
+	LastActivityAt time.Time
 }
 
 // Log is a timestamped audit trail entry for an item.
@@ -103,11 +110,12 @@ func (s LearningStatus) IsValid() bool {
 	return s == LearningStatusActive || s == LearningStatusStale || s == LearningStatusArchived
 }
 
-// Concept represents a knowledge category within a project.
+// Concept represents a knowledge category. Concepts are global: a name
+// identifies the same concept regardless of which project the learnings
+// filed under it came from.
 type Concept struct {
 	ID            string // con-XXXXXX
 	Name          string
-	Project       string
 	Summary       string
 	LastUpdated   time.Time
 	LearningCount int // Derived from learning_concepts join
@@ -116,7 +124,6 @@ type Concept struct {
 // Learning represents a piece of knowledge discovered during work.
 type Learning struct {
 	ID        string // lrn-XXXXXX
-	Project   string
 	CreatedAt time.Time
 	UpdatedAt time.Time
 	TaskID    *string // Optional link to the task that discovered this

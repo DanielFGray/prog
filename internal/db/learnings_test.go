@@ -29,7 +29,6 @@ func TestCreateLearning(t *testing.T) {
 	now := time.Now()
 	learning := &model.Learning{
 		ID:        model.GenerateLearningID(),
-		Project:   "test",
 		CreatedAt: now,
 		UpdatedAt: now,
 		TaskID:    &task.ID,
@@ -56,9 +55,6 @@ func TestCreateLearning(t *testing.T) {
 	if got.Detail != learning.Detail {
 		t.Errorf("detail = %q, want %q", got.Detail, learning.Detail)
 	}
-	if got.Project != learning.Project {
-		t.Errorf("project = %q, want %q", got.Project, learning.Project)
-	}
 	if got.TaskID == nil || *got.TaskID != *learning.TaskID {
 		t.Errorf("taskID = %v, want %v", got.TaskID, learning.TaskID)
 	}
@@ -79,7 +75,6 @@ func TestCreateLearning_CreatesConceptsOnFirstUse(t *testing.T) {
 	now := time.Now()
 	learning := &model.Learning{
 		ID:        model.GenerateLearningID(),
-		Project:   "test",
 		CreatedAt: now,
 		UpdatedAt: now,
 		Summary:   "Test learning",
@@ -92,7 +87,7 @@ func TestCreateLearning_CreatesConceptsOnFirstUse(t *testing.T) {
 	}
 
 	// Verify concept was created
-	concepts, err := db.ListConcepts("test", false)
+	concepts, err := db.ListConcepts(false)
 	if err != nil {
 		t.Fatalf("failed to list concepts: %v", err)
 	}
@@ -114,7 +109,6 @@ func TestGetLearning(t *testing.T) {
 	now := time.Now()
 	learning := &model.Learning{
 		ID:        model.GenerateLearningID(),
-		Project:   "test",
 		CreatedAt: now,
 		UpdatedAt: now,
 		Summary:   "Test learning",
@@ -159,7 +153,6 @@ func TestUpdateLearningSummary(t *testing.T) {
 	now := time.Now()
 	learning := &model.Learning{
 		ID:        model.GenerateLearningID(),
-		Project:   "test",
 		CreatedAt: now,
 		UpdatedAt: now,
 		Summary:   "Original summary",
@@ -199,7 +192,6 @@ func TestUpdateLearningDetail(t *testing.T) {
 	now := time.Now()
 	learning := &model.Learning{
 		ID:        model.GenerateLearningID(),
-		Project:   "test",
 		CreatedAt: now,
 		UpdatedAt: now,
 		Summary:   "Test learning",
@@ -238,7 +230,6 @@ func TestUpdateLearningStatus(t *testing.T) {
 	now := time.Now()
 	learning := &model.Learning{
 		ID:        model.GenerateLearningID(),
-		Project:   "test",
 		CreatedAt: now,
 		UpdatedAt: now,
 		Summary:   "Test learning",
@@ -276,7 +267,6 @@ func TestDeleteLearning(t *testing.T) {
 	now := time.Now()
 	learning := &model.Learning{
 		ID:        model.GenerateLearningID(),
-		Project:   "test",
 		CreatedAt: now,
 		UpdatedAt: now,
 		Summary:   "Test learning",
@@ -324,7 +314,6 @@ func TestListConcepts(t *testing.T) {
 	// Create learning with multiple concepts
 	learning := &model.Learning{
 		ID:        model.GenerateLearningID(),
-		Project:   "test",
 		CreatedAt: now,
 		UpdatedAt: now,
 		Summary:   "Test learning 1",
@@ -338,7 +327,6 @@ func TestListConcepts(t *testing.T) {
 	// Create another learning that uses "auth" again
 	learning2 := &model.Learning{
 		ID:        model.GenerateLearningID(),
-		Project:   "test",
 		CreatedAt: now.Add(time.Second),
 		UpdatedAt: now.Add(time.Second),
 		Summary:   "Test learning 2",
@@ -350,7 +338,7 @@ func TestListConcepts(t *testing.T) {
 	}
 
 	// List by count (default)
-	concepts, err := db.ListConcepts("test", false)
+	concepts, err := db.ListConcepts(false)
 	if err != nil {
 		t.Fatalf("failed to list concepts: %v", err)
 	}
@@ -383,7 +371,6 @@ func TestListConcepts_SortByRecent(t *testing.T) {
 	// Create learning with old concept
 	learning1 := &model.Learning{
 		ID:        model.GenerateLearningID(),
-		Project:   "test",
 		CreatedAt: now,
 		UpdatedAt: now,
 		Summary:   "Test learning 1",
@@ -397,7 +384,6 @@ func TestListConcepts_SortByRecent(t *testing.T) {
 	// Create learning with new concept later
 	learning2 := &model.Learning{
 		ID:        model.GenerateLearningID(),
-		Project:   "test",
 		CreatedAt: now.Add(time.Hour),
 		UpdatedAt: now.Add(time.Hour),
 		Summary:   "Test learning 2",
@@ -409,7 +395,7 @@ func TestListConcepts_SortByRecent(t *testing.T) {
 	}
 
 	// List by recent
-	concepts, err := db.ListConcepts("test", true)
+	concepts, err := db.ListConcepts(true)
 	if err != nil {
 		t.Fatalf("failed to list concepts: %v", err)
 	}
@@ -427,7 +413,7 @@ func TestListConcepts_SortByRecent(t *testing.T) {
 func TestListConcepts_Empty(t *testing.T) {
 	db := setupTestDB(t)
 
-	concepts, err := db.ListConcepts("test", false)
+	concepts, err := db.ListConcepts(false)
 	if err != nil {
 		t.Fatalf("failed to list concepts: %v", err)
 	}
@@ -444,7 +430,6 @@ func TestSetConceptSummary(t *testing.T) {
 	now := time.Now()
 	learning := &model.Learning{
 		ID:        model.GenerateLearningID(),
-		Project:   "test",
 		CreatedAt: now,
 		UpdatedAt: now,
 		Summary:   "Test learning",
@@ -456,12 +441,12 @@ func TestSetConceptSummary(t *testing.T) {
 	}
 
 	// Set summary
-	if err := db.SetConceptSummary("auth", "test", "Authentication and authorization"); err != nil {
+	if err := db.SetConceptSummary("auth", "Authentication and authorization"); err != nil {
 		t.Fatalf("failed to set concept summary: %v", err)
 	}
 
 	// Verify
-	concepts, _ := db.ListConcepts("test", false)
+	concepts, _ := db.ListConcepts(false)
 	if len(concepts) != 1 {
 		t.Fatalf("expected 1 concept")
 	}
@@ -473,7 +458,7 @@ func TestSetConceptSummary(t *testing.T) {
 func TestSetConceptSummary_NotFound(t *testing.T) {
 	db := setupTestDB(t)
 
-	err := db.SetConceptSummary("nonexistent", "test", "summary")
+	err := db.SetConceptSummary("nonexistent", "summary")
 	if err == nil {
 		t.Error("expected error for nonexistent concept")
 	}
@@ -486,7 +471,6 @@ func TestRenameConcept(t *testing.T) {
 	now := time.Now()
 	learning := &model.Learning{
 		ID:        model.GenerateLearningID(),
-		Project:   "test",
 		CreatedAt: now,
 		UpdatedAt: now,
 		Summary:   "Test learning",
@@ -498,12 +482,12 @@ func TestRenameConcept(t *testing.T) {
 	}
 
 	// Rename
-	if err := db.RenameConcept("authn", "authentication", "test"); err != nil {
+	if err := db.RenameConcept("authn", "authentication"); err != nil {
 		t.Fatalf("failed to rename concept: %v", err)
 	}
 
 	// Verify old name is gone
-	concepts, _ := db.ListConcepts("test", false)
+	concepts, _ := db.ListConcepts(false)
 	if len(concepts) != 1 {
 		t.Fatalf("expected 1 concept")
 	}
@@ -515,7 +499,7 @@ func TestRenameConcept(t *testing.T) {
 func TestRenameConcept_NotFound(t *testing.T) {
 	db := setupTestDB(t)
 
-	err := db.RenameConcept("nonexistent", "newname", "test")
+	err := db.RenameConcept("nonexistent", "newname")
 	if err == nil {
 		t.Error("expected error for nonexistent concept")
 	}
@@ -543,7 +527,6 @@ func TestGetRelatedConcepts(t *testing.T) {
 	now := time.Now()
 	learning := &model.Learning{
 		ID:        model.GenerateLearningID(),
-		Project:   "test",
 		CreatedAt: now,
 		UpdatedAt: now,
 		Summary:   "Test learning",
@@ -588,21 +571,21 @@ func TestEnsureConcept(t *testing.T) {
 	db := setupTestDB(t)
 
 	// Ensure creates new
-	if err := db.EnsureConcept("new-concept", "test"); err != nil {
+	if err := db.EnsureConcept("new-concept"); err != nil {
 		t.Fatalf("failed to ensure concept: %v", err)
 	}
 
-	concepts, _ := db.ListConcepts("test", false)
+	concepts, _ := db.ListConcepts(false)
 	if len(concepts) != 1 {
 		t.Fatalf("expected 1 concept")
 	}
 
 	// Ensure is idempotent
-	if err := db.EnsureConcept("new-concept", "test"); err != nil {
+	if err := db.EnsureConcept("new-concept"); err != nil {
 		t.Fatalf("failed to ensure concept again: %v", err)
 	}
 
-	concepts, _ = db.ListConcepts("test", false)
+	concepts, _ = db.ListConcepts(false)
 	if len(concepts) != 1 {
 		t.Errorf("concept count = %d, want 1 (should not duplicate)", len(concepts))
 	}
@@ -617,7 +600,6 @@ func TestCreateLearning_DuplicateConcept(t *testing.T) {
 	now := time.Now()
 	learning := &model.Learning{
 		ID:        model.GenerateLearningID(),
-		Project:   "test",
 		CreatedAt: now,
 		UpdatedAt: now,
 		Summary:   "Test learning",
@@ -646,7 +628,6 @@ func TestDeleteLearning_UpdatesConceptCount(t *testing.T) {
 	// Create two learnings with same concept
 	learning1 := &model.Learning{
 		ID:        model.GenerateLearningID(),
-		Project:   "test",
 		CreatedAt: now,
 		UpdatedAt: now,
 		Summary:   "Test learning 1",
@@ -659,7 +640,6 @@ func TestDeleteLearning_UpdatesConceptCount(t *testing.T) {
 
 	learning2 := &model.Learning{
 		ID:        model.GenerateLearningID(),
-		Project:   "test",
 		CreatedAt: now,
 		UpdatedAt: now,
 		Summary:   "Test learning 2",
@@ -671,7 +651,7 @@ func TestDeleteLearning_UpdatesConceptCount(t *testing.T) {
 	}
 
 	// Verify count is 2
-	concepts, _ := db.ListConcepts("test", false)
+	concepts, _ := db.ListConcepts(false)
 	if concepts[0].LearningCount != 2 {
 		t.Errorf("initial count = %d, want 2", concepts[0].LearningCount)
 	}
@@ -682,7 +662,7 @@ func TestDeleteLearning_UpdatesConceptCount(t *testing.T) {
 	}
 
 	// Verify count decreased to 1
-	concepts, _ = db.ListConcepts("test", false)
+	concepts, _ = db.ListConcepts(false)
 	if concepts[0].LearningCount != 1 {
 		t.Errorf("count after delete = %d, want 1", concepts[0].LearningCount)
 	}
@@ -695,7 +675,6 @@ func TestRenameConcept_PreservesSummary(t *testing.T) {
 	now := time.Now()
 	learning := &model.Learning{
 		ID:        model.GenerateLearningID(),
-		Project:   "test",
 		CreatedAt: now,
 		UpdatedAt: now,
 		Summary:   "Test learning",
@@ -707,17 +686,17 @@ func TestRenameConcept_PreservesSummary(t *testing.T) {
 	}
 
 	// Set a summary
-	if err := db.SetConceptSummary("original", "test", "Important summary"); err != nil {
+	if err := db.SetConceptSummary("original", "Important summary"); err != nil {
 		t.Fatalf("failed to set summary: %v", err)
 	}
 
 	// Rename
-	if err := db.RenameConcept("original", "renamed", "test"); err != nil {
+	if err := db.RenameConcept("original", "renamed"); err != nil {
 		t.Fatalf("failed to rename: %v", err)
 	}
 
 	// Verify summary is preserved
-	concepts, _ := db.ListConcepts("test", false)
+	concepts, _ := db.ListConcepts(false)
 	if len(concepts) != 1 {
 		t.Fatalf("expected 1 concept")
 	}
@@ -726,45 +705,6 @@ func TestRenameConcept_PreservesSummary(t *testing.T) {
 	}
 	if concepts[0].Summary != "Important summary" {
 		t.Errorf("summary = %q, want 'Important summary'", concepts[0].Summary)
-	}
-}
-
-func TestGetCurrentTaskID(t *testing.T) {
-	db := setupTestDB(t)
-
-	// No in-progress task
-	taskID, err := db.GetCurrentTaskID("test")
-	if err != nil {
-		t.Fatalf("failed to get current task: %v", err)
-	}
-	if taskID != nil {
-		t.Errorf("expected nil, got %v", taskID)
-	}
-
-	// Create an in-progress task
-	task := &model.Item{
-		ID:        model.GenerateID(model.ItemTypeTask),
-		Project:   "test",
-		Type:      model.ItemTypeTask,
-		Title:     "Test task",
-		Status:    model.StatusInProgress,
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
-	}
-	if err := db.CreateItem(task); err != nil {
-		t.Fatalf("failed to create task: %v", err)
-	}
-
-	// Now should return the task
-	taskID, err = db.GetCurrentTaskID("test")
-	if err != nil {
-		t.Fatalf("failed to get current task: %v", err)
-	}
-	if taskID == nil {
-		t.Fatal("expected task ID, got nil")
-	}
-	if *taskID != task.ID {
-		t.Errorf("taskID = %q, want %q", *taskID, task.ID)
 	}
 }
 
@@ -777,7 +717,6 @@ func TestGetLearningsByConcepts(t *testing.T) {
 	// Create learnings with different concepts
 	learning1 := &model.Learning{
 		ID:        model.GenerateLearningID(),
-		Project:   "test",
 		CreatedAt: now,
 		UpdatedAt: now,
 		Summary:   "Auth learning",
@@ -790,7 +729,6 @@ func TestGetLearningsByConcepts(t *testing.T) {
 
 	learning2 := &model.Learning{
 		ID:        model.GenerateLearningID(),
-		Project:   "test",
 		CreatedAt: now.Add(time.Second),
 		UpdatedAt: now.Add(time.Second),
 		Summary:   "Concurrency learning",
@@ -803,7 +741,6 @@ func TestGetLearningsByConcepts(t *testing.T) {
 
 	learning3 := &model.Learning{
 		ID:        model.GenerateLearningID(),
-		Project:   "test",
 		CreatedAt: now.Add(2 * time.Second),
 		UpdatedAt: now.Add(2 * time.Second),
 		Summary:   "Auth and concurrency learning",
@@ -815,7 +752,7 @@ func TestGetLearningsByConcepts(t *testing.T) {
 	}
 
 	// Query by single concept
-	learnings, err := db.GetLearningsByConcepts("test", []string{"auth"}, false)
+	learnings, err := db.GetLearningsByConcepts([]string{"auth"}, false)
 	if err != nil {
 		t.Fatalf("failed to get learnings by concepts: %v", err)
 	}
@@ -824,7 +761,7 @@ func TestGetLearningsByConcepts(t *testing.T) {
 	}
 
 	// Query by multiple concepts (union)
-	learnings, err = db.GetLearningsByConcepts("test", []string{"auth", "concurrency"}, false)
+	learnings, err = db.GetLearningsByConcepts([]string{"auth", "concurrency"}, false)
 	if err != nil {
 		t.Fatalf("failed to get learnings: %v", err)
 	}
@@ -845,7 +782,6 @@ func TestGetLearningsByConcepts_ExcludesStale(t *testing.T) {
 	// Create active learning
 	learning1 := &model.Learning{
 		ID:        model.GenerateLearningID(),
-		Project:   "test",
 		CreatedAt: now,
 		UpdatedAt: now,
 		Summary:   "Active learning",
@@ -859,7 +795,6 @@ func TestGetLearningsByConcepts_ExcludesStale(t *testing.T) {
 	// Create stale learning
 	learning2 := &model.Learning{
 		ID:        model.GenerateLearningID(),
-		Project:   "test",
 		CreatedAt: now,
 		UpdatedAt: now,
 		Summary:   "Stale learning",
@@ -871,7 +806,7 @@ func TestGetLearningsByConcepts_ExcludesStale(t *testing.T) {
 	}
 
 	// Without include-stale, should only get active
-	learnings, err := db.GetLearningsByConcepts("test", []string{"auth"}, false)
+	learnings, err := db.GetLearningsByConcepts([]string{"auth"}, false)
 	if err != nil {
 		t.Fatalf("failed to get learnings: %v", err)
 	}
@@ -883,7 +818,7 @@ func TestGetLearningsByConcepts_ExcludesStale(t *testing.T) {
 	}
 
 	// With include-stale, should get both
-	learnings, err = db.GetLearningsByConcepts("test", []string{"auth"}, true)
+	learnings, err = db.GetLearningsByConcepts([]string{"auth"}, true)
 	if err != nil {
 		t.Fatalf("failed to get learnings: %v", err)
 	}
@@ -896,7 +831,7 @@ func TestGetLearningsByConcepts_Empty(t *testing.T) {
 	db := setupTestDB(t)
 
 	// Empty concept list
-	learnings, err := db.GetLearningsByConcepts("test", []string{}, false)
+	learnings, err := db.GetLearningsByConcepts([]string{}, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -905,7 +840,7 @@ func TestGetLearningsByConcepts_Empty(t *testing.T) {
 	}
 
 	// Nonexistent concept
-	learnings, err = db.GetLearningsByConcepts("test", []string{"nonexistent"}, false)
+	learnings, err = db.GetLearningsByConcepts([]string{"nonexistent"}, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -921,7 +856,6 @@ func TestSearchLearnings(t *testing.T) {
 	// Create learnings with searchable content
 	learning1 := &model.Learning{
 		ID:        model.GenerateLearningID(),
-		Project:   "test",
 		CreatedAt: now,
 		UpdatedAt: now,
 		Summary:   "Token refresh has race condition",
@@ -935,7 +869,6 @@ func TestSearchLearnings(t *testing.T) {
 
 	learning2 := &model.Learning{
 		ID:        model.GenerateLearningID(),
-		Project:   "test",
 		CreatedAt: now,
 		UpdatedAt: now,
 		Summary:   "Database connection pooling",
@@ -948,7 +881,7 @@ func TestSearchLearnings(t *testing.T) {
 	}
 
 	// Search for "token"
-	learnings, err := db.SearchLearnings("test", "token", false)
+	learnings, err := db.SearchLearnings("token", false)
 	if err != nil {
 		t.Fatalf("failed to search learnings: %v", err)
 	}
@@ -960,7 +893,7 @@ func TestSearchLearnings(t *testing.T) {
 	}
 
 	// Search for "race condition"
-	learnings, err = db.SearchLearnings("test", "race condition", false)
+	learnings, err = db.SearchLearnings("race condition", false)
 	if err != nil {
 		t.Fatalf("failed to search learnings: %v", err)
 	}
@@ -969,7 +902,7 @@ func TestSearchLearnings(t *testing.T) {
 	}
 
 	// Search for "connection" (in second learning)
-	learnings, err = db.SearchLearnings("test", "connection", false)
+	learnings, err = db.SearchLearnings("connection", false)
 	if err != nil {
 		t.Fatalf("failed to search learnings: %v", err)
 	}
@@ -988,7 +921,6 @@ func TestSearchLearnings_ExcludesStale(t *testing.T) {
 	// Create stale learning
 	learning := &model.Learning{
 		ID:        model.GenerateLearningID(),
-		Project:   "test",
 		CreatedAt: now,
 		UpdatedAt: now,
 		Summary:   "Stale token info",
@@ -1000,7 +932,7 @@ func TestSearchLearnings_ExcludesStale(t *testing.T) {
 	}
 
 	// Without include-stale, should not find
-	learnings, err := db.SearchLearnings("test", "token", false)
+	learnings, err := db.SearchLearnings("token", false)
 	if err != nil {
 		t.Fatalf("failed to search learnings: %v", err)
 	}
@@ -1009,7 +941,7 @@ func TestSearchLearnings_ExcludesStale(t *testing.T) {
 	}
 
 	// With include-stale, should find
-	learnings, err = db.SearchLearnings("test", "token", true)
+	learnings, err = db.SearchLearnings("token", true)
 	if err != nil {
 		t.Fatalf("failed to search learnings: %v", err)
 	}
@@ -1024,7 +956,6 @@ func TestSearchLearnings_NoResults(t *testing.T) {
 	now := time.Now()
 	learning := &model.Learning{
 		ID:        model.GenerateLearningID(),
-		Project:   "test",
 		CreatedAt: now,
 		UpdatedAt: now,
 		Summary:   "Some learning",
@@ -1035,7 +966,7 @@ func TestSearchLearnings_NoResults(t *testing.T) {
 		t.Fatalf("failed to create learning: %v", err)
 	}
 
-	learnings, err := db.SearchLearnings("test", "nonexistent query", false)
+	learnings, err := db.SearchLearnings("nonexistent query", false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1053,7 +984,6 @@ func TestListConceptsWithStats(t *testing.T) {
 	// Create learnings with different concepts at different times
 	learning1 := &model.Learning{
 		ID:        model.GenerateLearningID(),
-		Project:   "test",
 		CreatedAt: now.Add(-48 * time.Hour), // 2 days ago
 		UpdatedAt: now.Add(-48 * time.Hour),
 		Summary:   "Old auth learning",
@@ -1066,7 +996,6 @@ func TestListConceptsWithStats(t *testing.T) {
 
 	learning2 := &model.Learning{
 		ID:        model.GenerateLearningID(),
-		Project:   "test",
 		CreatedAt: now.Add(-1 * time.Hour), // 1 hour ago
 		UpdatedAt: now.Add(-1 * time.Hour),
 		Summary:   "Recent auth learning",
@@ -1079,7 +1008,6 @@ func TestListConceptsWithStats(t *testing.T) {
 
 	learning3 := &model.Learning{
 		ID:        model.GenerateLearningID(),
-		Project:   "test",
 		CreatedAt: now.Add(-24 * time.Hour), // 1 day ago
 		UpdatedAt: now.Add(-24 * time.Hour),
 		Summary:   "Database learning",
@@ -1090,7 +1018,7 @@ func TestListConceptsWithStats(t *testing.T) {
 		t.Fatalf("failed to create learning3: %v", err)
 	}
 
-	stats, err := db.ListConceptsWithStats("test")
+	stats, err := db.ListConceptsWithStats()
 	if err != nil {
 		t.Fatalf("failed to get stats: %v", err)
 	}
@@ -1131,7 +1059,6 @@ func TestListConceptsWithStats_ExcludesStale(t *testing.T) {
 	// Create active learning
 	learning1 := &model.Learning{
 		ID:        model.GenerateLearningID(),
-		Project:   "test",
 		CreatedAt: now,
 		UpdatedAt: now,
 		Summary:   "Active learning",
@@ -1145,7 +1072,6 @@ func TestListConceptsWithStats_ExcludesStale(t *testing.T) {
 	// Create stale learning
 	learning2 := &model.Learning{
 		ID:        model.GenerateLearningID(),
-		Project:   "test",
 		CreatedAt: now.Add(-48 * time.Hour),
 		UpdatedAt: now.Add(-48 * time.Hour),
 		Summary:   "Stale learning",
@@ -1156,7 +1082,7 @@ func TestListConceptsWithStats_ExcludesStale(t *testing.T) {
 		t.Fatalf("failed to create learning2: %v", err)
 	}
 
-	stats, err := db.ListConceptsWithStats("test")
+	stats, err := db.ListConceptsWithStats()
 	if err != nil {
 		t.Fatalf("failed to get stats: %v", err)
 	}
@@ -1175,11 +1101,11 @@ func TestListConceptsWithStats_EmptyConcept(t *testing.T) {
 	db := setupTestDB(t)
 
 	// Create a concept via EnsureConcept (no learnings)
-	if err := db.EnsureConcept("empty-concept", "test"); err != nil {
+	if err := db.EnsureConcept("empty-concept"); err != nil {
 		t.Fatalf("failed to ensure concept: %v", err)
 	}
 
-	stats, err := db.ListConceptsWithStats("test")
+	stats, err := db.ListConceptsWithStats()
 	if err != nil {
 		t.Fatalf("failed to get stats: %v", err)
 	}
@@ -1193,5 +1119,104 @@ func TestListConceptsWithStats_EmptyConcept(t *testing.T) {
 	}
 	if stats[0].OldestAge != nil {
 		t.Errorf("oldest age should be nil for empty concept")
+	}
+}
+
+// --- Global scope ---
+
+// TestConceptsAreGlobal covers the core promise of the global model: two
+// learnings that name the same concept share one concept row, and a query by
+// that name returns both regardless of which work produced them.
+func TestConceptsAreGlobal(t *testing.T) {
+	db := setupTestDB(t)
+
+	now := time.Now()
+	for _, summary := range []string{"Found while working on the API", "Found while working on the CLI"} {
+		l := &model.Learning{
+			ID:        model.GenerateLearningID(),
+			CreatedAt: now,
+			UpdatedAt: now,
+			Summary:   summary,
+			Status:    model.LearningStatusActive,
+			Concepts:  []string{"auth"},
+		}
+		if err := db.CreateLearning(l); err != nil {
+			t.Fatalf("failed to create learning: %v", err)
+		}
+	}
+
+	concepts, err := db.ListConcepts(false)
+	if err != nil {
+		t.Fatalf("failed to list concepts: %v", err)
+	}
+	if len(concepts) != 1 {
+		t.Fatalf("concepts = %d, want 1 shared concept", len(concepts))
+	}
+	if concepts[0].LearningCount != 2 {
+		t.Errorf("learning count = %d, want 2", concepts[0].LearningCount)
+	}
+
+	found, err := db.GetLearningsByConcepts([]string{"auth"}, false)
+	if err != nil {
+		t.Fatalf("failed to get learnings by concept: %v", err)
+	}
+	if len(found) != 2 {
+		t.Errorf("learnings = %d, want both", len(found))
+	}
+
+	all, err := db.GetAllLearnings(false)
+	if err != nil {
+		t.Fatalf("failed to get all learnings: %v", err)
+	}
+	if len(all) != 2 {
+		t.Errorf("all learnings = %d, want both", len(all))
+	}
+
+	hits, err := db.SearchLearnings("working", false)
+	if err != nil {
+		t.Fatalf("failed to search learnings: %v", err)
+	}
+	if len(hits) != 2 {
+		t.Errorf("search hits = %d, want both", len(hits))
+	}
+}
+
+// TestGetRelatedConcepts_CrossesProjects checks that a task in one project can
+// surface a concept whose learnings were recorded while working elsewhere.
+func TestGetRelatedConcepts_CrossesProjects(t *testing.T) {
+	db := setupTestDB(t)
+
+	now := time.Now()
+	l := &model.Learning{
+		ID:        model.GenerateLearningID(),
+		CreatedAt: now,
+		UpdatedAt: now,
+		Summary:   "Token refresh must be idempotent",
+		Status:    model.LearningStatusActive,
+		Concepts:  []string{"auth"},
+	}
+	if err := db.CreateLearning(l); err != nil {
+		t.Fatalf("failed to create learning: %v", err)
+	}
+
+	task := &model.Item{
+		ID:        model.GenerateID(model.ItemTypeTask),
+		Project:   "unrelated-project",
+		Type:      model.ItemTypeTask,
+		Title:     "Rework auth flow",
+		Status:    model.StatusOpen,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := db.CreateItem(task); err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+
+	related, err := db.GetRelatedConcepts(task.ID)
+	if err != nil {
+		t.Fatalf("failed to get related concepts: %v", err)
+	}
+	if len(related) != 1 || related[0].Name != "auth" {
+		t.Errorf("related = %v, want the globally shared auth concept", related)
 	}
 }

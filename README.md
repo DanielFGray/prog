@@ -126,7 +126,7 @@ prog done ts-a1b2c3
 
 | Flag | Commands | Description |
 |------|----------|-------------|
-| `-p, --project` | all | Filter/set project scope |
+| `-p, --project` | task and label commands | Filter/set project scope; knowledge commands are global |
 | `-e, --epic` | add | Create epic instead of task |
 | `-l, --label` | add, list, ready, status | Attach label at creation / filter by label (repeatable, AND logic) |
 | `--priority` | add | Priority: 1=high, 2=medium (default), 3=low |
@@ -311,7 +311,7 @@ The context engine captures tacit knowledge—things agents learn that aren't ob
 
 ### Data Model
 
-**Concepts** are knowledge categories within a project:
+**Concepts** are global knowledge categories shared across projects:
 ```
 auth          - "Token lifecycle, refresh, session coupling"
 database      - "SQLite patterns, schema migrations"
@@ -364,7 +364,7 @@ Each phase filters, so agents only load what's actually relevant.
 
 | Command | Description |
 |---------|-------------|
-| `prog concepts` | List concepts for a project |
+| `prog concepts` | List global concepts |
 | `prog context -c <name>` | Retrieve learnings by concept(s) |
 | `prog context -q <query>` | Full-text search on learnings |
 | `prog learn <summary>` | Log a new learning |
@@ -376,19 +376,19 @@ Each phase filters, so agents only load what's actually relevant.
 
 ```bash
 # List concepts to see what knowledge exists
-prog concepts -p myproject
+prog concepts
 # NAME          LEARNINGS  LAST UPDATED  SUMMARY
 # auth                  3  2h ago        Token lifecycle, refresh
 # database              2  1d ago        SQLite patterns
 
 # Retrieve by concept (union of multiple concepts)
-prog context -c auth -c database -p myproject
+prog context -c auth -c database
 
 # Full-text search when you don't know the concept
-prog context -q "race condition" -p myproject
+prog context -q "race condition"
 
 # Include stale learnings for historical context
-prog context -c auth --include-stale -p myproject
+prog context -c auth --include-stale
 ```
 
 ### Logging Learnings (Reflection)
@@ -401,14 +401,19 @@ Log learnings at the end of a session during reflection. This is more efficient 
 
 ```bash
 # Basic learning with concepts
-prog learn "Token refresh has race condition" -c auth -c concurrency -p myproject
+prog learn "Token refresh has race condition" -c auth -c concurrency --task ts-def456
 
 # With related files
-prog learn "Config loads from env first, then file" -c config -p myproject -f config.go
+prog learn "Config loads from env first, then file" -c config -f config.go
 
 # With full detail
-prog learn "summary" -c concept -p myproject --detail "full explanation..."
+prog learn "summary" -c concept --detail "full explanation..."
 ```
+
+The `--task` link is optional provenance. Prog never guesses it from other
+in-progress work, so omit it when the learning did not come from one task.
+Migration to the global model removes the old project attribution from taskless
+learnings; their concepts and file references remain unchanged.
 
 **What makes a good learning?**
 
@@ -444,8 +449,8 @@ Run `prog compact` to get guided prompting for grooming. The workflow has two ph
 
 **Phase 1: Discovery**
 ```bash
-prog concepts -p myproject --stats    # See concept distribution
-prog context -p myproject --summary   # Scan all one-liners
+prog concepts --stats    # See concept distribution
+prog context --summary   # Scan all one-liners
 ```
 
 Flag candidates: redundant (similar summaries), stale (old or outdated), low quality (vague, not actionable), fragmented (should be combined).
@@ -453,7 +458,7 @@ Flag candidates: redundant (similar summaries), stale (old or outdated), low qua
 **Phase 2: Selection & Grooming**
 ```bash
 prog context --id lrn-abc123          # Load specific learning
-prog context -c auth -p myproject --json  # Load all for a concept
+prog context -c auth --json           # Load all for a concept
 ```
 
 Then apply actions:
@@ -475,10 +480,10 @@ Stale learnings are excluded by default but can be included with `--include-stal
 
 ```bash
 # Update a concept's summary
-prog concepts auth -p myproject --summary "Token lifecycle and session management"
+prog concepts auth --summary "Token lifecycle and session management"
 
 # Rename a fragmented concept
-prog concepts authn -p myproject --rename auth
+prog concepts authn --rename auth
 ```
 
 ### Resources & Inspiration
@@ -584,7 +589,7 @@ prog  12/47 items  status:oib
 - **Labels**: Tags for categorization (bug, feature, refactor, etc), project-scoped
 - **Logs**: Timestamped audit trail per item
 - **Projects**: String tag to scope work (e.g., "gaia", "myapp")
-- **Concepts**: Knowledge categories within a project (e.g., "auth", "database")
+- **Concepts**: Global knowledge categories (e.g., "auth", "database")
 - **Learnings**: Specific insights tagged with concepts, with summary and detail
 
 Database location: `~/.prog/prog.db`

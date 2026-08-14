@@ -30,9 +30,9 @@ func (db *DB) CreateLearning(l *model.Learning) error {
 
 	// Insert learning
 	_, err = tx.Exec(`
-		INSERT INTO learnings (id, project, created_at, updated_at, task_id, summary, detail, files, status)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, l.ID, l.Project, l.CreatedAt, l.UpdatedAt, l.TaskID, l.Summary, l.Detail, filesJSON, l.Status)
+		INSERT INTO learnings (id, created_at, updated_at, task_id, summary, detail, files, status)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, l.ID, l.CreatedAt, l.UpdatedAt, l.TaskID, l.Summary, l.Detail, filesJSON, l.Status)
 	if err != nil {
 		return fmt.Errorf("failed to insert learning: %w", err)
 	}
@@ -41,14 +41,14 @@ func (db *DB) CreateLearning(l *model.Learning) error {
 	for _, conceptName := range l.Concepts {
 		// Check if concept exists
 		var conceptID string
-		err = tx.QueryRow(`SELECT id FROM concepts WHERE name = ? AND project = ?`, conceptName, l.Project).Scan(&conceptID)
+		err = tx.QueryRow(`SELECT id FROM concepts WHERE name = ?`, conceptName).Scan(&conceptID)
 		if err != nil {
 			// Concept doesn't exist, create it
 			conceptID = model.GenerateConceptID()
 			_, err = tx.Exec(`
-				INSERT INTO concepts (id, name, project, last_updated)
-				VALUES (?, ?, ?, ?)
-			`, conceptID, conceptName, l.Project, l.UpdatedAt)
+				INSERT INTO concepts (id, name, last_updated)
+				VALUES (?, ?, ?)
+			`, conceptID, conceptName, l.UpdatedAt)
 			if err != nil {
 				return fmt.Errorf("failed to create concept %q: %w", conceptName, err)
 			}
@@ -84,9 +84,9 @@ func (db *DB) GetLearning(id string) (*model.Learning, error) {
 	var taskID *string
 
 	err := db.QueryRow(`
-		SELECT id, project, created_at, updated_at, task_id, summary, detail, files, status
+		SELECT id, created_at, updated_at, task_id, summary, detail, files, status
 		FROM learnings WHERE id = ?
-	`, id).Scan(&l.ID, &l.Project, &l.CreatedAt, &l.UpdatedAt, &taskID, &l.Summary, &l.Detail, &filesJSON, &l.Status)
+	`, id).Scan(&l.ID, &l.CreatedAt, &l.UpdatedAt, &taskID, &l.Summary, &l.Detail, &filesJSON, &l.Status)
 	if err != nil {
 		return nil, fmt.Errorf("learning not found: %s", id)
 	}
@@ -121,35 +121,18 @@ func (db *DB) GetLearning(id string) (*model.Learning, error) {
 	return &l, nil
 }
 
-// GetCurrentTaskID returns the ID of the first in-progress task for a project.
-// Returns nil if no task is in progress.
-func (db *DB) GetCurrentTaskID(project string) (*string, error) {
-	var taskID string
-	err := db.QueryRow(`
-		SELECT id FROM items
-		WHERE status = 'in_progress' AND project = ?
-		ORDER BY updated_at DESC
-		LIMIT 1
-	`, project).Scan(&taskID)
-	if err != nil {
-		return nil, nil // No task in progress, not an error
-	}
-	return &taskID, nil
-}
-
-// ListConcepts returns all concepts for a project, sorted by learning count (most used first).
-func (db *DB) ListConcepts(project string, sortByRecent bool) ([]model.Concept, error) {
+// ListConcepts returns every concept, sorted by learning count (most used first).
+func (db *DB) ListConcepts(sortByRecent bool) ([]model.Concept, error) {
 	orderBy := "count DESC, c.name"
 	if sortByRecent {
 		orderBy = "c.last_updated DESC, c.name"
 	}
 
 	rows, err := db.Query(`
-		SELECT c.id, c.name, c.project, c.summary, c.last_updated,
+		SELECT c.id, c.name, c.summary, c.last_updated,
 			(SELECT COUNT(*) FROM learning_concepts lc WHERE lc.concept_id = c.id) as count
 		FROM concepts c
-		WHERE c.project = ?
-		ORDER BY `+orderBy, project)
+		ORDER BY ` + orderBy)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list concepts: %w", err)
 	}
@@ -159,7 +142,7 @@ func (db *DB) ListConcepts(project string, sortByRecent bool) ([]model.Concept, 
 	for rows.Next() {
 		var c model.Concept
 		var summary *string
-		if err := rows.Scan(&c.ID, &c.Name, &c.Project, &summary, &c.LastUpdated, &c.LearningCount); err != nil {
+		if err := rows.Scan(&c.ID, &c.Name, &summary, &c.LastUpdated, &c.LearningCount); err != nil {
 			return nil, fmt.Errorf("failed to scan concept: %w", err)
 		}
 		if summary != nil {
@@ -172,21 +155,21 @@ func (db *DB) ListConcepts(project string, sortByRecent bool) ([]model.Concept, 
 }
 
 // EnsureConcept creates a concept if it doesn't exist.
-func (db *DB) EnsureConcept(name, project string) error {
+func (db *DB) EnsureConcept(name string) error {
 	_, err := db.Exec(`
-		INSERT INTO concepts (id, name, project, last_updated)
-		VALUES (?, ?, ?, ?)
-		ON CONFLICT (name, project) DO NOTHING
-	`, model.GenerateConceptID(), name, project, time.Now())
+		INSERT INTO concepts (id, name, last_updated)
+		VALUES (?, ?, ?)
+		ON CONFLICT (name) DO NOTHING
+	`, model.GenerateConceptID(), name, time.Now())
 	return err
 }
 
 // SetConceptSummary updates a concept's summary.
-func (db *DB) SetConceptSummary(name, project, summary string) error {
+func (db *DB) SetConceptSummary(name, summary string) error {
 	result, err := db.Exec(`
 		UPDATE concepts SET summary = ?, last_updated = ?
-		WHERE name = ? AND project = ?
-	`, summary, time.Now(), name, project)
+		WHERE name = ?
+	`, summary, time.Now(), name)
 	if err != nil {
 		return fmt.Errorf("failed to update concept: %w", err)
 	}
@@ -276,11 +259,11 @@ func (db *DB) DeleteLearning(id string) error {
 }
 
 // RenameConcept changes a concept's name.
-func (db *DB) RenameConcept(oldName, newName, project string) error {
+func (db *DB) RenameConcept(oldName, newName string) error {
 	result, err := db.Exec(`
 		UPDATE concepts SET name = ?, last_updated = ?
-		WHERE name = ? AND project = ?
-	`, newName, time.Now(), oldName, project)
+		WHERE name = ?
+	`, newName, time.Now(), oldName)
 	if err != nil {
 		return fmt.Errorf("failed to rename concept: %w", err)
 	}
@@ -293,15 +276,14 @@ func (db *DB) RenameConcept(oldName, newName, project string) error {
 
 // GetLearningsByConcepts returns learnings that have any of the specified concepts.
 // Only returns active learnings by default. Results are sorted by created_at desc.
-func (db *DB) GetLearningsByConcepts(project string, conceptNames []string, includeStale bool) ([]model.Learning, error) {
+func (db *DB) GetLearningsByConcepts(conceptNames []string, includeStale bool) ([]model.Learning, error) {
 	if len(conceptNames) == 0 {
 		return nil, nil
 	}
 
 	// Build placeholders for IN clause
 	placeholders := make([]string, len(conceptNames))
-	args := make([]interface{}, 0, len(conceptNames)+2)
-	args = append(args, project)
+	args := make([]interface{}, 0, len(conceptNames))
 	for i, name := range conceptNames {
 		placeholders[i] = "?"
 		args = append(args, name)
@@ -313,12 +295,12 @@ func (db *DB) GetLearningsByConcepts(project string, conceptNames []string, incl
 	}
 
 	query := `
-		SELECT DISTINCT l.id, l.project, l.created_at, l.updated_at, l.task_id,
+		SELECT DISTINCT l.id, l.created_at, l.updated_at, l.task_id,
 			l.summary, l.detail, l.files, l.status
 		FROM learnings l
 		JOIN learning_concepts lc ON lc.learning_id = l.id
 		JOIN concepts c ON c.id = lc.concept_id
-		WHERE l.project = ? AND c.name IN (` + strings.Join(placeholders, ",") + `)
+		WHERE c.name IN (` + strings.Join(placeholders, ",") + `)
 		` + statusFilter + `
 		ORDER BY l.created_at DESC
 	`
@@ -334,7 +316,7 @@ func (db *DB) GetLearningsByConcepts(project string, conceptNames []string, incl
 		var l model.Learning
 		var filesJSON string
 		var taskID *string
-		if err := rows.Scan(&l.ID, &l.Project, &l.CreatedAt, &l.UpdatedAt, &taskID,
+		if err := rows.Scan(&l.ID, &l.CreatedAt, &l.UpdatedAt, &taskID,
 			&l.Summary, &l.Detail, &filesJSON, &l.Status); err != nil {
 			return nil, fmt.Errorf("failed to scan learning: %w", err)
 		}
@@ -374,23 +356,23 @@ func (db *DB) GetLearningsByConcepts(project string, conceptNames []string, incl
 
 // SearchLearnings performs full-text search on learnings.
 // Returns learnings matching the query, sorted by relevance.
-func (db *DB) SearchLearnings(project string, query string, includeStale bool) ([]model.Learning, error) {
+func (db *DB) SearchLearnings(query string, includeStale bool) ([]model.Learning, error) {
 	statusFilter := "AND l.status = 'active'"
 	if includeStale {
 		statusFilter = "AND l.status IN ('active', 'stale')"
 	}
 
 	sqlQuery := `
-		SELECT l.id, l.project, l.created_at, l.updated_at, l.task_id,
+		SELECT l.id, l.created_at, l.updated_at, l.task_id,
 			l.summary, l.detail, l.files, l.status
 		FROM learnings l
 		JOIN learnings_fts fts ON l.rowid = fts.rowid
-		WHERE learnings_fts MATCH ? AND l.project = ?
+		WHERE learnings_fts MATCH ?
 		` + statusFilter + `
 		ORDER BY rank
 	`
 
-	rows, err := db.Query(sqlQuery, query, project)
+	rows, err := db.Query(sqlQuery, query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to search learnings: %w", err)
 	}
@@ -401,7 +383,7 @@ func (db *DB) SearchLearnings(project string, query string, includeStale bool) (
 		var l model.Learning
 		var filesJSON string
 		var taskID *string
-		if err := rows.Scan(&l.ID, &l.Project, &l.CreatedAt, &l.UpdatedAt, &taskID,
+		if err := rows.Scan(&l.ID, &l.CreatedAt, &l.UpdatedAt, &taskID,
 			&l.Summary, &l.Detail, &filesJSON, &l.Status); err != nil {
 			return nil, fmt.Errorf("failed to scan learning: %w", err)
 		}
@@ -447,7 +429,7 @@ type ConceptStats struct {
 }
 
 // ListConceptsWithStats returns all concepts with learning count and oldest learning age.
-func (db *DB) ListConceptsWithStats(project string) ([]ConceptStats, error) {
+func (db *DB) ListConceptsWithStats() ([]ConceptStats, error) {
 	rows, err := db.Query(`
 		SELECT c.name,
 			COUNT(l.id) as count,
@@ -455,10 +437,9 @@ func (db *DB) ListConceptsWithStats(project string) ([]ConceptStats, error) {
 		FROM concepts c
 		LEFT JOIN learning_concepts lc ON lc.concept_id = c.id
 		LEFT JOIN learnings l ON l.id = lc.learning_id AND l.status = 'active'
-		WHERE c.project = ?
 		GROUP BY c.id
 		ORDER BY count DESC, c.name
-	`, project)
+	`)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list concept stats: %w", err)
 	}
@@ -495,24 +476,24 @@ func (db *DB) ListConceptsWithStats(project string) ([]ConceptStats, error) {
 	return stats, nil
 }
 
-// GetAllLearnings returns all learnings for a project, sorted by created_at desc.
+// GetAllLearnings returns every learning, sorted by created_at desc.
 // Only returns active learnings by default.
-func (db *DB) GetAllLearnings(project string, includeStale bool) ([]model.Learning, error) {
+func (db *DB) GetAllLearnings(includeStale bool) ([]model.Learning, error) {
 	statusFilter := "AND l.status = 'active'"
 	if includeStale {
 		statusFilter = "AND l.status IN ('active', 'stale')"
 	}
 
 	query := `
-		SELECT l.id, l.project, l.created_at, l.updated_at, l.task_id,
+		SELECT l.id, l.created_at, l.updated_at, l.task_id,
 			l.summary, l.detail, l.files, l.status
 		FROM learnings l
-		WHERE l.project = ?
+		WHERE 1 = 1
 		` + statusFilter + `
 		ORDER BY l.created_at DESC
 	`
 
-	rows, err := db.Query(query, project)
+	rows, err := db.Query(query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query learnings: %w", err)
 	}
@@ -523,7 +504,7 @@ func (db *DB) GetAllLearnings(project string, includeStale bool) ([]model.Learni
 		var l model.Learning
 		var filesJSON string
 		var taskID *string
-		if err := rows.Scan(&l.ID, &l.Project, &l.CreatedAt, &l.UpdatedAt, &taskID,
+		if err := rows.Scan(&l.ID, &l.CreatedAt, &l.UpdatedAt, &taskID,
 			&l.Summary, &l.Detail, &filesJSON, &l.Status); err != nil {
 			return nil, fmt.Errorf("failed to scan learning: %w", err)
 		}
@@ -570,8 +551,8 @@ func (db *DB) GetRelatedConcepts(taskID string) ([]model.Concept, error) {
 		return nil, err
 	}
 
-	// Get all concepts for this project
-	concepts, err := db.ListConcepts(item.Project, false)
+	// Concepts are global, so a task can surface knowledge learned elsewhere.
+	concepts, err := db.ListConcepts(false)
 	if err != nil {
 		return nil, err
 	}

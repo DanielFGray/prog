@@ -57,6 +57,7 @@ var (
 	flagStatusAll        bool
 	flagLearnConcept     []string
 	flagLearnFile        []string
+	flagLearnTask        string
 	flagLearnEditSummary string
 	flagLearnEditDetail  string
 	flagLearnStaleReason string
@@ -319,6 +320,9 @@ Examples:
 					DefinitionOfDone: item.DefinitionOfDone,
 					Labels:           labels,
 					Dependencies:     deps,
+					CreatedAt:        item.CreatedAt.Format(time.RFC3339),
+					UpdatedAt:        item.UpdatedAt.Format(time.RFC3339),
+					LastActivityAt:   item.LastActivityAt.Format(time.RFC3339),
 				})
 			}
 			b, err := json.MarshalIndent(output, "", "  ")
@@ -379,12 +383,18 @@ Examples:
 		if flagJSON {
 			output := make([]ItemReadyJSON, 0, len(items))
 			for _, item := range items {
+				labels := item.Labels
+				if labels == nil {
+					labels = []string{}
+				}
 				output = append(output, ItemReadyJSON{
 					ID:       item.ID,
 					Title:    item.Title,
 					Priority: item.Priority,
 					Type:     string(item.Type),
+					Project:  item.Project,
 					Parent:   item.ParentID,
+					Labels:   labels,
 				})
 			}
 			b, err := json.MarshalIndent(output, "", "  ")
@@ -474,6 +484,9 @@ Examples:
 				DefinitionOfDone: item.DefinitionOfDone,
 				Labels:           labels,
 				Dependencies:     deps,
+				CreatedAt:        item.CreatedAt.Format(time.RFC3339),
+				UpdatedAt:        item.UpdatedAt.Format(time.RFC3339),
+				LastActivityAt:   item.LastActivityAt.Format(time.RFC3339),
 				Logs:             logEntries,
 			}
 			b, err := json.MarshalIndent(output, "", "  ")
@@ -525,15 +538,20 @@ var doneCmd = &cobra.Command{
 		fmt.Printf("Completed %s\n", args[0])
 
 		// Prompt reflection
-		fmt.Println(`
-Reflect: What would help the next agent? (See instructions for guidance)
-  prog learn "summary" -c concept --detail "explanation"`)
+		printReflection(args[0])
 
 		// Backup after successful mutation
 		database.BackupQuiet()
 
 		return nil
 	},
+}
+
+func printReflection(taskID string) {
+	fmt.Printf(`
+Reflect: What would help the next agent? (See instructions for guidance)
+  prog learn "summary" -c concept --detail "explanation" --task %s
+`, taskID)
 }
 
 var reviewCmd = &cobra.Command{
@@ -799,8 +817,8 @@ var projectsRenameCmd = &cobra.Command{
 	Short: "Rename or merge a project",
 	Long: `Rename a project. If the target already exists, merges all items into it.
 
-Merging moves all items, labels, learnings, and concepts to the target project
-and deletes the source. Duplicate labels/concepts are skipped (target wins).
+Merging moves all items and labels to the target project and deletes the source.
+Learnings and concepts are global and are not affected.
 
 Examples:
   prog projects rename old-name new-name    # simple rename
@@ -920,30 +938,11 @@ Examples:
 		defer func() { _ = database.Close() }()
 
 		id := args[0]
-
-		// If --dod flag is set, update definition of done
-		if cmd.Flags().Changed("dod") {
-			var dod *string
-			if flagDoD != "" {
-				dod = &flagDoD
-			}
-			if err := database.SetDefinitionOfDone(id, dod); err != nil {
-				return err
-			}
-			if dod == nil {
-				fmt.Printf("Cleared definition of done for %s\n", id)
-			} else {
-				fmt.Printf("Updated definition of done for %s\n", id)
-			}
-			return nil
+		edited, err := editItem(database, id, flagEditTitle, cmd.Flags().Changed("title"), flagDoD, cmd.Flags().Changed("dod"))
+		if err != nil {
+			return err
 		}
-
-		// If --title flag is set, update title directly
-		if flagEditTitle != "" {
-			if err := database.SetTitle(id, flagEditTitle); err != nil {
-				return err
-			}
-			fmt.Printf("Updated title for %s\n", id)
+		if edited {
 			return nil
 		}
 
@@ -1021,6 +1020,30 @@ Examples:
 		fmt.Printf("Updated description for %s\n", id)
 		return nil
 	},
+}
+
+func editItem(database *db.DB, id, title string, titleChanged bool, dodValue string, dodChanged bool) (bool, error) {
+	if titleChanged {
+		if err := database.SetTitle(id, title); err != nil {
+			return false, err
+		}
+		fmt.Printf("Updated title for %s\n", id)
+	}
+	if dodChanged {
+		var dod *string
+		if dodValue != "" {
+			dod = &dodValue
+		}
+		if err := database.SetDefinitionOfDone(id, dod); err != nil {
+			return false, err
+		}
+		if dod == nil {
+			fmt.Printf("Cleared definition of done for %s\n", id)
+		} else {
+			fmt.Printf("Updated definition of done for %s\n", id)
+		}
+	}
+	return titleChanged || dodChanged, nil
 }
 
 // execCommand wraps exec.Command for testing
@@ -1244,7 +1267,8 @@ They're stored with a two-phase structure for efficient context retrieval:
 Learnings are tagged with concepts for organized retrieval.
 Concepts are created automatically if they don't exist.
 
-If a task is in progress for the project, the learning is linked to it.
+Use --task to record the task where the learning was discovered. The link is
+optional and is never inferred from other active work.
 
 CONTEXT MANAGEMENT FLOW:
 ┌─────────────────────────────────────────────────────────────┐
@@ -1277,16 +1301,17 @@ LEARNING STRUCTURE:
   └─────────────────────────────────────┘
 
 Examples:
-  prog learn "Token refresh has race condition" -p myproject -c auth -c concurrency
-  prog learn "Config loaded from env first" -p myproject -c config -f config.go
-  prog learn "Token refresh issue" -c auth -p myproject --detail "The mutex only protects..."
-  echo "multi-line detail" | prog learn "summary" -c auth -p myproject --detail -`,
+  prog learn "Token refresh has race condition" -c auth -c concurrency
+  prog learn "Config loaded from env first" -c config -f config.go
+  prog learn "Migration detail" -c database --task ts-a1b2c3
+  prog learn "Token refresh issue" -c auth --detail "The mutex only protects..."
+  echo "multi-line detail" | prog learn "summary" -c auth --detail -`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// Validate required flags
-		if flagProject == "" {
-			return fmt.Errorf("project is required (-p)")
+		if err := rejectKnowledgeProject(cmd); err != nil {
+			return err
 		}
+		// Validate required flags
 		if len(flagLearnConcept) == 0 {
 			return fmt.Errorf("at least one concept is required (-c)")
 		}
@@ -1297,10 +1322,10 @@ Examples:
 		}
 		defer func() { _ = database.Close() }()
 
-		project := flagProject
-
-		// Get current in-progress task for this project
-		taskID, _ := database.GetCurrentTaskID(project)
+		taskID, err := learningTaskID(database, flagLearnTask)
+		if err != nil {
+			return err
+		}
 
 		// Handle detail from stdin
 		detail := flagLearnDetail
@@ -1315,7 +1340,6 @@ Examples:
 		now := time.Now()
 		learning := &model.Learning{
 			ID:        model.GenerateLearningID(),
-			Project:   project,
 			CreatedAt: now,
 			UpdatedAt: now,
 			TaskID:    taskID,
@@ -1344,6 +1368,24 @@ Examples:
 	},
 }
 
+func learningTaskID(database *db.DB, taskID string) (*string, error) {
+	if taskID == "" {
+		return nil, nil
+	}
+	item, err := database.GetItem(taskID)
+	if err != nil {
+		return nil, err
+	}
+	return &item.ID, nil
+}
+
+func rejectKnowledgeProject(cmd *cobra.Command) error {
+	if cmd.Flags().Changed("project") {
+		return fmt.Errorf("--project is not supported: learnings and concepts are global")
+	}
+	return nil
+}
+
 var learnEditCmd = &cobra.Command{
 	Use:   "edit <learning-id>",
 	Short: "Edit a learning's summary or detail",
@@ -1355,6 +1397,9 @@ Examples:
   echo "multi-line" | prog learn edit lrn-abc123 --detail -`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := rejectKnowledgeProject(cmd); err != nil {
+			return err
+		}
 		if flagLearnEditSummary == "" && flagLearnEditDetail == "" {
 			return fmt.Errorf("--summary or --detail is required")
 		}
@@ -1400,6 +1445,9 @@ Examples:
   prog learn stale lrn-a lrn-b lrn-c --reason "Compacted into lrn-xyz"`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := rejectKnowledgeProject(cmd); err != nil {
+			return err
+		}
 		database, err := openDB()
 		if err != nil {
 			return err
@@ -1439,6 +1487,9 @@ Example:
   prog learn rm lrn-abc123`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := rejectKnowledgeProject(cmd); err != nil {
+			return err
+		}
 		database, err := openDB()
 		if err != nil {
 			return err
@@ -1455,8 +1506,8 @@ Example:
 
 var conceptsCmd = &cobra.Command{
 	Use:   "concepts [name]",
-	Short: "List or edit concepts for a project",
-	Long: `List all concepts for a project, or edit a concept.
+	Short: "List or edit global concepts",
+	Long: `List all concepts, or edit a concept.
 
 Concepts are knowledge categories that group related learnings.
 They enable organized context retrieval by topic (e.g., "auth", "database", "api").
@@ -1465,7 +1516,6 @@ CONCEPT MODEL:
   ┌─────────────────────────────────────────────────────────┐
   │ Concepts (con-XXXXXX)                                    │
   │ ├─ Name: "auth"                                          │
-  │ ├─ Project: "myproject"                                  │
   │ ├─ Summary: "Authentication patterns and gotchas"        │
   │ └─ Learning Count: 5                                     │
   └─────────────────────────────────────────────────────────┘
@@ -1494,13 +1544,16 @@ RETRIEVAL PATTERNS:
 Default sort is by learning count (most used first).
 
 Examples:
-  prog concepts -p myproject                        # list concepts
-  prog concepts -p myproject --recent               # sort by last updated
-  prog concepts -p myproject --stats                # show count and oldest age
+  prog concepts                                     # list concepts
+  prog concepts --recent                            # sort by last updated
+  prog concepts --stats                             # show count and oldest age
   prog concepts --related ts-abc123                 # suggest concepts for a task
-  prog concepts fts -p myproject --summary "..."    # set concept summary
-  prog concepts fts -p myproject --rename "search"  # rename concept`,
+  prog concepts fts --summary "..."                 # set concept summary
+  prog concepts fts --rename "search"               # rename concept`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := rejectKnowledgeProject(cmd); err != nil {
+			return err
+		}
 		database, err := openDB()
 		if err != nil {
 			return err
@@ -1509,17 +1562,14 @@ Examples:
 
 		// Edit mode: concept name provided with --summary or --rename
 		if len(args) > 0 && (flagConceptsSummary != "" || flagConceptsRename != "") {
-			if flagProject == "" {
-				return fmt.Errorf("project is required (-p)")
-			}
 			if flagConceptsSummary != "" {
-				if err := database.SetConceptSummary(args[0], flagProject, flagConceptsSummary); err != nil {
+				if err := database.SetConceptSummary(args[0], flagConceptsSummary); err != nil {
 					return err
 				}
 				fmt.Printf("Updated %s\n", args[0])
 			}
 			if flagConceptsRename != "" {
-				if err := database.RenameConcept(args[0], flagConceptsRename, flagProject); err != nil {
+				if err := database.RenameConcept(args[0], flagConceptsRename); err != nil {
 					return err
 				}
 				fmt.Printf("Renamed %s -> %s\n", args[0], flagConceptsRename)
@@ -1529,10 +1579,7 @@ Examples:
 
 		// Stats mode
 		if flagConceptsStats {
-			if flagProject == "" {
-				return fmt.Errorf("project is required (-p)")
-			}
-			stats, err := database.ListConceptsWithStats(flagProject)
+			stats, err := database.ListConceptsWithStats()
 			if err != nil {
 				return err
 			}
@@ -1554,11 +1601,7 @@ Examples:
 				return err
 			}
 		} else {
-			// List all concepts for project
-			if flagProject == "" {
-				return fmt.Errorf("project is required (-p) or use --related <task-id>")
-			}
-			concepts, err = database.ListConcepts(flagProject, flagConceptsRecent)
+			concepts, err = database.ListConcepts(flagConceptsRecent)
 			if err != nil {
 				return err
 			}
@@ -1716,14 +1759,17 @@ var contextCmd = &cobra.Command{
 Use this to load relevant context before starting work on a task.
 
 Examples:
-  prog context -p myproject --summary                # all learnings, grouped by concept
-  prog context -c auth -c concurrency -p myproject   # by concepts
-  prog context -q "rate limit" -p myproject          # full-text search
-  prog context -c auth --summary -p myproject        # one-liner per learning
-  prog context --id lrn-abc123                       # specific learning by ID
-  prog context -c auth --include-stale -p myproject  # include stale learnings
-  prog context -c auth --json -p myproject           # JSON output for agents`,
+  prog context --summary                       # all learnings, grouped by concept
+  prog context -c auth -c concurrency          # by concepts
+  prog context -q "rate limit"                 # full-text search
+  prog context -c auth --summary               # one-liner per learning
+  prog context --id lrn-abc123                 # specific learning by ID
+  prog context -c auth --include-stale         # include stale learnings
+  prog context -c auth --json                  # JSON output for agents`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := rejectKnowledgeProject(cmd); err != nil {
+			return err
+		}
 		database, err := openDB()
 		if err != nil {
 			return err
@@ -1743,14 +1789,9 @@ Examples:
 			return nil
 		}
 
-		// All other modes require project
-		if flagProject == "" {
-			return fmt.Errorf("project is required (-p) or use --id")
-		}
-
 		// Mode 2: All learnings with --summary (no concepts/query required)
 		if flagContextSummary && len(flagContextConcept) == 0 && flagContextQuery == "" {
-			learnings, err := database.GetAllLearnings(flagProject, flagContextStale)
+			learnings, err := database.GetAllLearnings(flagContextStale)
 			if err != nil {
 				return err
 			}
@@ -1769,7 +1810,7 @@ Examples:
 			}
 
 			// Get concept summaries for grouped output
-			concepts, _ := database.ListConcepts(flagProject, false)
+			concepts, _ := database.ListConcepts(false)
 			conceptMap := make(map[string]string)
 			for _, c := range concepts {
 				conceptMap[c.Name] = c.Summary
@@ -1786,9 +1827,9 @@ Examples:
 		var learnings []model.Learning
 
 		if len(flagContextConcept) > 0 {
-			learnings, err = database.GetLearningsByConcepts(flagProject, flagContextConcept, flagContextStale)
+			learnings, err = database.GetLearningsByConcepts(flagContextConcept, flagContextStale)
 		} else {
-			learnings, err = database.SearchLearnings(flagProject, flagContextQuery, flagContextStale)
+			learnings, err = database.SearchLearnings(flagContextQuery, flagContextStale)
 		}
 		if err != nil {
 			return err
@@ -1811,7 +1852,7 @@ Examples:
 		// Mode 3: Summary mode (one-liners) for specific concepts
 		if flagContextSummary {
 			// Get concept summaries for header
-			concepts, _ := database.ListConcepts(flagProject, false)
+			concepts, _ := database.ListConcepts(false)
 			conceptMap := make(map[string]string)
 			for _, c := range concepts {
 				conceptMap[c.Name] = c.Summary
@@ -2139,9 +2180,11 @@ The workflow uses two phases:
 2. Selection: Load detail for candidates, groom, repeat
 
 Example:
-  prog compact              # Output compaction guidance
-  prog compact -p myproject # Include project-specific stats`,
+  prog compact`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := rejectKnowledgeProject(cmd); err != nil {
+			return err
+		}
 		database, err := openDB()
 		if err != nil {
 			printCompactContent(nil)
@@ -2149,17 +2192,7 @@ Example:
 		}
 		defer func() { _ = database.Close() }()
 
-		var stats []db.ConceptStats
-		if flagProject != "" {
-			stats, _ = database.ListConceptsWithStats(flagProject)
-		} else {
-			// Get stats across all projects
-			projects, _ := database.ListProjects()
-			for _, p := range projects {
-				pStats, _ := database.ListConceptsWithStats(p)
-				stats = append(stats, pStats...)
-			}
-		}
+		stats, _ := database.ListConceptsWithStats()
 
 		printCompactContent(stats)
 		return nil
@@ -2336,7 +2369,7 @@ Press q to quit.`,
 
 func init() {
 	// Global flags
-	rootCmd.PersistentFlags().StringVarP(&flagProject, "project", "p", "", "Project scope")
+	rootCmd.PersistentFlags().StringVarP(&flagProject, "project", "p", "", "Project scope for task and label commands")
 
 	// add flags
 	addCmd.Flags().BoolVarP(&flagEpic, "epic", "e", false, "Create an epic instead of a task")
@@ -2381,6 +2414,7 @@ func init() {
 	learnCmd.Flags().StringArrayVarP(&flagLearnConcept, "concept", "c", nil, "Concept to tag this learning with (can be repeated)")
 	learnCmd.Flags().StringArrayVarP(&flagLearnFile, "file", "f", nil, "Related file (can be repeated)")
 	learnCmd.Flags().StringVar(&flagLearnDetail, "detail", "", "Full context/explanation (use '-' for stdin)")
+	learnCmd.Flags().StringVar(&flagLearnTask, "task", "", "Task ID to link this learning to")
 
 	// learn subcommands
 	learnCmd.AddCommand(learnEditCmd)
@@ -2566,7 +2600,7 @@ func printItemDetail(item *model.Item, logs []model.Log, deps []string, concepts
 			fmt.Printf("  %s (%d) - %s\n", c.Name, c.LearningCount, summary)
 			conceptFlags = append(conceptFlags, "-c "+c.Name)
 		}
-		fmt.Printf("\nLoad with: prog context %s -p %s --summary\n", strings.Join(conceptFlags, " "), item.Project)
+		fmt.Printf("\nLoad with: prog context %s --summary\n", strings.Join(conceptFlags, " "))
 	}
 }
 
@@ -2740,11 +2774,13 @@ func printLearnings(learnings []model.Learning) {
 
 // ItemReadyJSON is the JSON serialization format for ready items.
 type ItemReadyJSON struct {
-	ID       string  `json:"id"`
-	Title    string  `json:"title"`
-	Priority int     `json:"priority"`
-	Type     string  `json:"type"`
-	Parent   *string `json:"parent"`
+	ID       string   `json:"id"`
+	Title    string   `json:"title"`
+	Priority int      `json:"priority"`
+	Type     string   `json:"type"`
+	Project  string   `json:"project"`
+	Parent   *string  `json:"parent"`
+	Labels   []string `json:"labels"`
 }
 
 // ItemShowJSON is the JSON serialization format for show (full detail).
@@ -2760,6 +2796,9 @@ type ItemShowJSON struct {
 	DefinitionOfDone *string   `json:"definition_of_done"`
 	Labels           []string  `json:"labels"`
 	Dependencies     []string  `json:"dependencies"`
+	CreatedAt        string    `json:"created_at"`
+	UpdatedAt        string    `json:"updated_at"`
+	LastActivityAt   string    `json:"last_activity_at"`
 	Logs             []LogJSON `json:"logs"`
 }
 
@@ -2776,6 +2815,9 @@ type ItemListJSON struct {
 	DefinitionOfDone *string  `json:"definition_of_done"`
 	Labels           []string `json:"labels"`
 	Dependencies     []string `json:"dependencies"`
+	CreatedAt        string   `json:"created_at"`
+	UpdatedAt        string   `json:"updated_at"`
+	LastActivityAt   string   `json:"last_activity_at"`
 }
 
 // LogJSON is the JSON serialization format for log entries.
@@ -3104,7 +3146,7 @@ Compaction keeps the knowledge base high-signal and navigable.
 Scan all learning summaries grouped by concept:
 
 ` + "```" + `bash
-prog context -p <project> --summary   # All learnings, grouped by concept
+prog context --summary   # All learnings, grouped by concept
 ` + "```" + `
 
 Flag candidates:

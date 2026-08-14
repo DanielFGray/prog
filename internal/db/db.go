@@ -15,7 +15,7 @@ import (
 
 // SchemaVersion is the current schema version.
 // Increment this when adding new migrations.
-const SchemaVersion = 3
+const SchemaVersion = 4
 
 // baseSchema is the original schema (version 1).
 // New tables should be added via migrations, not here.
@@ -144,6 +144,77 @@ CREATE INDEX IF NOT EXISTS idx_item_labels_label ON item_labels(label_id);
 	`
 ALTER TABLE items ADD COLUMN definition_of_done TEXT;
 `,
+	// Version 4: Knowledge is global. Learnings and concepts lose their project
+	// column, and a concept name identifies exactly one concept everywhere.
+	//
+	// Concepts with the same name in different projects collapse into one row.
+	// The survivor keeps the id and last_updated of the newest duplicate and the
+	// newest summary that is not empty, so a project that never wrote a summary
+	// cannot erase one written elsewhere. Ties break on id, so the result does
+	// not depend on row order.
+	//
+	// Timestamps are compared as text. Every writer stores them with the same
+	// leading "YYYY-MM-DD HH:MM:SS" layout, which sorts chronologically, and
+	// SQLite's date functions cannot read the trailing zone that Go appends.
+	//
+	// The junction table is rebuilt rather than updated in place: repointing
+	// rows to the surviving concept can collide with a link that already exists,
+	// and INSERT ... SELECT DISTINCT into a fresh table drops those collisions
+	// while keeping every distinct association. It is dropped before the concept
+	// tables are swapped so that no foreign key ever names a missing table.
+	`
+CREATE TABLE concepts_v4 (
+	id TEXT PRIMARY KEY,
+	name TEXT NOT NULL UNIQUE,
+	summary TEXT,
+	last_updated DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+INSERT INTO concepts_v4 (id, name, summary, last_updated)
+SELECT
+	(SELECT winner.id FROM concepts winner
+		WHERE winner.name = c.name
+		ORDER BY winner.last_updated DESC, winner.id LIMIT 1),
+	c.name,
+	(SELECT described.summary FROM concepts described
+		WHERE described.name = c.name
+		AND described.summary IS NOT NULL AND described.summary != ''
+		ORDER BY described.last_updated DESC, described.id LIMIT 1),
+	MAX(c.last_updated)
+FROM concepts c
+GROUP BY c.name;
+
+CREATE TABLE learning_concepts_v4 (
+	learning_id TEXT NOT NULL,
+	concept_id TEXT NOT NULL
+);
+
+INSERT INTO learning_concepts_v4 (learning_id, concept_id)
+SELECT DISTINCT lc.learning_id, surviving.id
+FROM learning_concepts lc
+JOIN concepts old ON old.id = lc.concept_id
+JOIN concepts_v4 surviving ON surviving.name = old.name;
+
+DROP TABLE learning_concepts;
+DROP TABLE concepts;
+ALTER TABLE concepts_v4 RENAME TO concepts;
+
+CREATE TABLE learning_concepts (
+	learning_id TEXT REFERENCES learnings(id),
+	concept_id TEXT REFERENCES concepts(id),
+	PRIMARY KEY (learning_id, concept_id)
+);
+
+INSERT INTO learning_concepts (learning_id, concept_id)
+SELECT learning_id, concept_id FROM learning_concepts_v4;
+
+DROP TABLE learning_concepts_v4;
+
+CREATE INDEX IF NOT EXISTS idx_learning_concepts_concept ON learning_concepts(concept_id);
+
+DROP INDEX IF EXISTS idx_learnings_project;
+ALTER TABLE learnings DROP COLUMN project;
+`,
 }
 
 // DB wraps a SQL database connection with task-specific operations.
@@ -226,42 +297,53 @@ func (db *DB) Init() error {
 // Migrate runs any pending schema migrations.
 // Safe to call on every startup - only runs migrations newer than current version.
 func (db *DB) Migrate() error {
-	currentVersion, err := db.getSchemaVersion()
+	tx, err := db.Begin()
 	if err != nil {
+		return fmt.Errorf("failed to begin migration: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var currentVersion int
+	if err := tx.QueryRow("PRAGMA user_version").Scan(&currentVersion); err != nil {
 		return fmt.Errorf("failed to get schema version: %w", err)
 	}
 
-	// If version is 0 but tables exist, this is a legacy database (v1)
+	// If version is 0 but tables exist, this is a legacy database (v1).
 	if currentVersion == 0 {
-		exists, err := db.tableExists("items")
+		var tables int
+		err = tx.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='items'").Scan(&tables)
 		if err != nil {
 			return fmt.Errorf("failed to check tables: %w", err)
 		}
-		if exists {
+		if tables > 0 {
 			currentVersion = 1
-			if err := db.setSchemaVersion(1); err != nil {
+			if _, err := tx.Exec("PRAGMA user_version = 1"); err != nil {
 				return fmt.Errorf("failed to set legacy version: %w", err)
 			}
 		}
 	}
 
-	// Run pending migrations
+	// A migration and its version update are one unit. This is essential for
+	// table-rebuilding migrations: a failed process must leave the old schema
+	// intact so the next startup can retry it.
 	for i, migration := range migrations {
 		targetVersion := i + 2 // migrations[0] upgrades to v2
 		if currentVersion >= targetVersion {
 			continue
 		}
 
-		if _, err := db.Exec(migration); err != nil {
+		if _, err := tx.Exec(migration); err != nil {
 			return fmt.Errorf("migration to v%d failed: %w", targetVersion, err)
 		}
-
-		if err := db.setSchemaVersion(targetVersion); err != nil {
+		if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version = %d", targetVersion)); err != nil {
 			return fmt.Errorf("failed to update version to %d: %w", targetVersion, err)
 		}
 		currentVersion = targetVersion
 	}
 
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit migrations: %w", err)
+	}
 	return nil
 }
 

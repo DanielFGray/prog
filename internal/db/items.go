@@ -40,14 +40,15 @@ func (db *DB) CreateItem(item *model.Item) error {
 // GetItem retrieves an item by ID.
 func (db *DB) GetItem(id string) (*model.Item, error) {
 	row := db.QueryRow(`
-		SELECT id, project, type, title, description, definition_of_done, status, priority, parent_id, created_at, updated_at
+		SELECT `+itemColumns+`
 		FROM items WHERE id = ?`, id)
 
 	item := &model.Item{}
 	var parentID, definitionOfDone sql.NullString
+	var lastLogAt sql.NullString
 	err := row.Scan(
 		&item.ID, &item.Project, &item.Type, &item.Title, &item.Description, &definitionOfDone,
-		&item.Status, &item.Priority, &parentID, &item.CreatedAt, &item.UpdatedAt,
+		&item.Status, &item.Priority, &parentID, &item.CreatedAt, &item.UpdatedAt, &lastLogAt,
 	)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("item not found: %s (use 'prog list' to see available items)", id)
@@ -62,6 +63,7 @@ func (db *DB) GetItem(id string) (*model.Item, error) {
 	if definitionOfDone.Valid {
 		item.DefinitionOfDone = &definitionOfDone.String
 	}
+	item.LastActivityAt = laterOf(item.UpdatedAt, lastLogAt)
 
 	// Derive epic status from children at query time
 	if err := db.applyDerivedEpicStatus(item); err != nil {

@@ -69,6 +69,16 @@ type ListFilter struct {
 	Labels      []string      // Filter by label names (AND - items must have all)
 }
 
+// itemColumns is the projection every item read shares, so scanning stays in
+// one place (queryItems). The trailing subquery carries the item's newest log
+// timestamp; queryItems folds it together with updated_at into LastActivityAt.
+// The fold happens in Go rather than SQL because the two columns are written in
+// different formats and zones — items.updated_at is a Go local timestamp with a
+// monotonic suffix, logs.created_at is SQLite's UTC CURRENT_TIMESTAMP — so a SQL
+// MAX() over them would compare the strings lexically and be wrong by hours.
+const itemColumns = `id, project, type, title, description, definition_of_done, status, priority, parent_id, created_at, updated_at,
+		(SELECT MAX(l.created_at) FROM logs l WHERE l.item_id = items.id) AS last_log_at`
+
 // ListItems returns items filtered by project and/or status.
 func (db *DB) ListItems(project string, status *model.Status) ([]model.Item, error) {
 	return db.ListItemsFiltered(ListFilter{Project: project, Status: status})
@@ -76,7 +86,7 @@ func (db *DB) ListItems(project string, status *model.Status) ([]model.Item, err
 
 // ListItemsFiltered returns items matching the given filters.
 func (db *DB) ListItemsFiltered(filter ListFilter) ([]model.Item, error) {
-	query := `SELECT id, project, type, title, description, definition_of_done, status, priority, parent_id, created_at, updated_at FROM items WHERE 1=1`
+	query := `SELECT ` + itemColumns + ` FROM items WHERE 1=1`
 	args := []any{}
 
 	if filter.Project != "" {
@@ -158,7 +168,7 @@ func (db *DB) ReadyItems(project string) ([]model.Item, error) {
 // ReadyItemsFiltered returns ready items with optional label filtering.
 func (db *DB) ReadyItemsFiltered(project string, labels []string) ([]model.Item, error) {
 	query := `
-		SELECT id, project, type, title, description, definition_of_done, status, priority, parent_id, created_at, updated_at
+		SELECT ` + itemColumns + `
 		FROM items
 		WHERE status = 'open'
 		  AND type = 'task'
@@ -254,7 +264,7 @@ func (db *DB) ProjectStatusFiltered(project string, labels []string) (*StatusRep
 	// Get recent done (last 3, sorted by updated_at desc)
 	// We need to query specifically because we need ordering by updated_at
 	recentQuery := `
-		SELECT id, project, type, title, description, definition_of_done, status, priority, parent_id, created_at, updated_at
+		SELECT ` + itemColumns + `
 		FROM items WHERE status IN ('done', 'canceled')`
 	recentArgs := []any{}
 	if project != "" {
@@ -302,7 +312,9 @@ func (db *DB) ListProjects() ([]string, error) {
 }
 
 // RenameProject renames a project. If the target already exists, it merges
-// all items into the target and deletes the source project.
+// all items and labels into the target and deletes the source project.
+// Learnings and concepts are not project-scoped, so a rename does not move
+// them.
 func (db *DB) RenameProject(oldName, newName string) error {
 	if oldName == newName {
 		return nil
@@ -373,28 +385,8 @@ func (db *DB) RenameProject(oldName, newName string) error {
 		return fmt.Errorf("failed to delete duplicate labels: %w", err)
 	}
 
-	// Update learnings
-	_, err = tx.Exec(`UPDATE learnings SET project = ?, updated_at = ? WHERE project = ?`, newName, now, oldName)
-	if err != nil {
-		return fmt.Errorf("failed to update learnings: %w", err)
-	}
-
-	// Update concepts (skip if concept name already exists in target, uses last_updated column)
-	_, err = tx.Exec(`
-		UPDATE concepts SET project = ?, last_updated = ?
-		WHERE project = ?
-		AND name NOT IN (SELECT name FROM concepts WHERE project = ?)
-	`, newName, now, oldName, newName)
-	if err != nil {
-		return fmt.Errorf("failed to update concepts: %w", err)
-	}
-	// Delete remaining concepts (duplicates that couldn't move)
-	_, err = tx.Exec(`DELETE FROM concepts WHERE project = ?`, oldName)
-	if err != nil {
-		return fmt.Errorf("failed to delete duplicate concepts: %w", err)
-	}
-
-	// Note: deps table has no project column - it references items directly
+	// Note: deps table has no project column - it references items directly.
+	// Learnings and concepts are global and so are untouched by a rename.
 
 	// Delete old project
 	_, err = tx.Exec(`DELETE FROM projects WHERE name = ?`, oldName)
@@ -414,6 +406,30 @@ func (db *DB) RenameProject(oldName, newName string) error {
 }
 
 // queryItems is a helper to scan item rows.
+// laterOf resolves an item's LastActivityAt from its update time and the
+// timestamp of its newest log, which is absent for items that have never been
+// logged against.
+//
+// lastLogAt arrives as a string rather than a time: the driver only parses
+// columns declared DATETIME, and MAX() erases that declaration. Logs are always
+// written by SQLite's CURRENT_TIMESTAMP default, so the format is fixed and UTC.
+// A log whose timestamp cannot be parsed is treated as no log at all, leaving
+// UpdatedAt as the activity time — a stale-looking item is recoverable, a failed
+// query is not.
+func laterOf(updatedAt time.Time, lastLogAt sql.NullString) time.Time {
+	if !lastLogAt.Valid {
+		return updatedAt
+	}
+	logged, err := time.ParseInLocation(sqliteTimestamp, lastLogAt.String, time.UTC)
+	if err != nil || !logged.After(updatedAt) {
+		return updatedAt
+	}
+	return logged
+}
+
+// sqliteTimestamp is the layout SQLite's CURRENT_TIMESTAMP writes.
+const sqliteTimestamp = "2006-01-02 15:04:05"
+
 func (db *DB) queryItems(query string, args ...any) ([]model.Item, error) {
 	rows, err := db.Query(query, args...)
 	if err != nil {
@@ -425,9 +441,10 @@ func (db *DB) queryItems(query string, args ...any) ([]model.Item, error) {
 	for rows.Next() {
 		var item model.Item
 		var parentID, definitionOfDone sql.NullString
+		var lastLogAt sql.NullString
 		if err := rows.Scan(
 			&item.ID, &item.Project, &item.Type, &item.Title, &item.Description, &definitionOfDone,
-			&item.Status, &item.Priority, &parentID, &item.CreatedAt, &item.UpdatedAt,
+			&item.Status, &item.Priority, &parentID, &item.CreatedAt, &item.UpdatedAt, &lastLogAt,
 		); err != nil {
 			return nil, fmt.Errorf("failed to scan item: %w", err)
 		}
@@ -437,6 +454,7 @@ func (db *DB) queryItems(query string, args ...any) ([]model.Item, error) {
 		if definitionOfDone.Valid {
 			item.DefinitionOfDone = &definitionOfDone.String
 		}
+		item.LastActivityAt = laterOf(item.UpdatedAt, lastLogAt)
 		items = append(items, item)
 	}
 	if err := rows.Err(); err != nil {
