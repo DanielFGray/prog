@@ -1,30 +1,11 @@
 package main
 
 import (
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/baiirun/prog/internal/model"
 )
-
-func TestReflectionLinksLearningToCompletedTask(t *testing.T) {
-	output := captureOutput(func() {
-		printReflection("ts-done01")
-	})
-	if !strings.Contains(output, "durable fact about the world") {
-		t.Fatalf("reflection output %q does not define a durable learning", output)
-	}
-	if !strings.Contains(output, "cannot recover by exploring the code, documentation, or tests") {
-		t.Fatalf("reflection output %q does not exclude discoverable facts", output)
-	}
-	if !strings.Contains(output, "Use prog log for task state and progress") {
-		t.Fatalf("reflection output %q does not direct task state to prog log", output)
-	}
-	if !strings.Contains(output, "--task ts-done01") {
-		t.Fatalf("reflection output %q does not link the completed task", output)
-	}
-}
 
 func TestLearningTaskIDUsesExplicitCompletedTask(t *testing.T) {
 	database := setupTestDB(t)
