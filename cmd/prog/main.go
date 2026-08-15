@@ -539,20 +539,19 @@ var doneCmd = &cobra.Command{
 		fmt.Printf("Completed %s\n", args[0])
 
 		// Prompt reflection
-		printReflection(args[0])
+		fmt.Printf(`
+Reflect: Did you discover a durable fact about the world that the next agent
+cannot recover by exploring the code, documentation, or tests?
+  No or unsure: 
+	skip this step. Use prog log for task state and progress.
+  Yes: prog learn "summary" -c concept --detail "explanation"
+`)
 
 		// Backup after successful mutation
 		database.BackupQuiet()
 
 		return nil
 	},
-}
-
-func printReflection(taskID string) {
-	fmt.Printf(`
-Reflect: What would help the next agent? (See instructions for guidance)
-  prog learn "summary" -c concept --detail "explanation" --task %s
-`, taskID)
 }
 
 var reviewCmd = &cobra.Command{
