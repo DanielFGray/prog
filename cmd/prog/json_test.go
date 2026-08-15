@@ -69,18 +69,7 @@ func TestReadyJSON_WithItems(t *testing.T) {
 	}
 
 	output := captureOutput(func() {
-		jsonItems := make([]ItemReadyJSON, 0, len(readyItems))
-		for _, item := range readyItems {
-			jsonItems = append(jsonItems, ItemReadyJSON{
-				ID:             item.ID,
-				Title:          item.Title,
-				Priority:       item.Priority,
-				Type:           string(item.Type),
-				Parent:         item.ParentID,
-				LastActivityAt: item.LastActivityAt.Format(time.RFC3339),
-			})
-		}
-		b, _ := json.MarshalIndent(jsonItems, "", "  ")
+		b, _ := json.MarshalIndent(readyItemsToJSON(readyItems), "", "  ")
 		fmt.Println(string(b))
 	})
 
@@ -121,6 +110,102 @@ func TestReadyJSON_WithItems(t *testing.T) {
 	}
 	if !found["ts-bbb222"] {
 		t.Error("missing ts-bbb222 in ready output")
+	}
+}
+
+func TestReadyJSON_DescriptionContract(t *testing.T) {
+	database := setupTestDB(t)
+	now := time.Now()
+
+	desc := "Full handoff context\nspanning two lines"
+	withDesc := &model.Item{
+		ID: "ts-desc01", Project: "test", Type: model.ItemTypeTask,
+		Title: "With description", Status: model.StatusOpen, Priority: 1,
+		Description: desc,
+		CreatedAt:   now, UpdatedAt: now,
+	}
+	withoutDesc := &model.Item{
+		ID: "ts-desc02", Project: "test", Type: model.ItemTypeTask,
+		Title: "Without description", Status: model.StatusOpen, Priority: 2,
+		CreatedAt: now, UpdatedAt: now,
+	}
+	for _, item := range []*model.Item{withDesc, withoutDesc} {
+		if err := database.CreateItem(item); err != nil {
+			t.Fatalf("create item: %v", err)
+		}
+	}
+
+	items, err := database.ReadyItems("test")
+	if err != nil {
+		t.Fatalf("ready items: %v", err)
+	}
+
+	output := captureOutput(func() {
+		b, err := json.MarshalIndent(readyItemsToJSON(items), "", "  ")
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		fmt.Println(string(b))
+	})
+
+	// The emitted document must carry the description field with a full string
+	// or null — never omitted, never an empty string.
+	var raw []map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(output), &raw); err != nil {
+		t.Fatalf("invalid JSON: %v\noutput: %s", err, output)
+	}
+	byID := make(map[string]map[string]json.RawMessage, len(raw))
+	for _, m := range raw {
+		var id string
+		if err := json.Unmarshal(m["id"], &id); err != nil {
+			t.Fatalf("invalid id: %v", err)
+		}
+		byID[id] = m
+	}
+
+	withRaw, ok := byID["ts-desc01"]
+	if !ok {
+		t.Fatal("missing ts-desc01 in ready output")
+	}
+	descVal, present := withRaw["description"]
+	if !present {
+		t.Error("description field missing for task with a description")
+	}
+	var descGot string
+	if err := json.Unmarshal(descVal, &descGot); err != nil {
+		t.Fatalf("description = %s, want full string", descVal)
+	}
+	if descGot != desc {
+		t.Errorf("description = %q, want %q", descGot, desc)
+	}
+
+	withoutRaw, ok := byID["ts-desc02"]
+	if !ok {
+		t.Fatal("missing ts-desc02 in ready output")
+	}
+	nullVal, present := withoutRaw["description"]
+	if !present {
+		t.Error("description field missing for task without a description")
+	}
+	if string(nullVal) != "null" {
+		t.Errorf("description = %s, want null for task without a description", nullVal)
+	}
+
+	var typed []ItemReadyJSON
+	if err := json.Unmarshal([]byte(output), &typed); err != nil {
+		t.Fatalf("invalid typed JSON: %v", err)
+	}
+	for _, r := range typed {
+		switch r.ID {
+		case "ts-desc01":
+			if r.Description == nil || *r.Description != desc {
+				t.Errorf("description = %v, want %q", r.Description, desc)
+			}
+		case "ts-desc02":
+			if r.Description != nil {
+				t.Errorf("description = %v, want nil", r.Description)
+			}
+		}
 	}
 }
 

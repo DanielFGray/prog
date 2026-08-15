@@ -381,23 +381,7 @@ Examples:
 		}
 
 		if flagJSON {
-			output := make([]ItemReadyJSON, 0, len(items))
-			for _, item := range items {
-				labels := item.Labels
-				if labels == nil {
-					labels = []string{}
-				}
-				output = append(output, ItemReadyJSON{
-					ID:             item.ID,
-					Title:          item.Title,
-					Priority:       item.Priority,
-					Type:           string(item.Type),
-					Project:        item.Project,
-					Parent:         item.ParentID,
-					Labels:         labels,
-					LastActivityAt: item.LastActivityAt.Format(time.RFC3339),
-				})
-			}
+			output := readyItemsToJSON(items)
 			b, err := json.MarshalIndent(output, "", "  ")
 			if err != nil {
 				return fmt.Errorf("failed to marshal JSON: %w", err)
@@ -2773,15 +2757,50 @@ func printLearnings(learnings []model.Learning) {
 }
 
 // ItemReadyJSON is the JSON serialization format for ready items.
+// Description is nil when the task has none, so consumers can treat it as
+// optional without conflating "no description" with an empty string.
 type ItemReadyJSON struct {
 	ID             string   `json:"id"`
 	Title          string   `json:"title"`
+	Description    *string  `json:"description"`
 	Priority       int      `json:"priority"`
 	Type           string   `json:"type"`
 	Project        string   `json:"project"`
 	Parent         *string  `json:"parent"`
 	Labels         []string `json:"labels"`
 	LastActivityAt string   `json:"last_activity_at"`
+}
+
+// readyItemsToJSON maps ready items to their JSON serialization form.
+func readyItemsToJSON(items []model.Item) []ItemReadyJSON {
+	output := make([]ItemReadyJSON, 0, len(items))
+	for _, item := range items {
+		labels := item.Labels
+		if labels == nil {
+			labels = []string{}
+		}
+		output = append(output, ItemReadyJSON{
+			ID:             item.ID,
+			Title:          item.Title,
+			Description:    optionalString(item.Description),
+			Priority:       item.Priority,
+			Type:           string(item.Type),
+			Project:        item.Project,
+			Parent:         item.ParentID,
+			Labels:         labels,
+			LastActivityAt: item.LastActivityAt.Format(time.RFC3339),
+		})
+	}
+	return output
+}
+
+// optionalString returns nil for an empty string so the emitted JSON is null
+// rather than "", preserving the difference between "not set" and "empty".
+func optionalString(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
 }
 
 // ItemShowJSON is the JSON serialization format for show (full detail).
