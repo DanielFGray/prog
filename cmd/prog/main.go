@@ -388,13 +388,14 @@ Examples:
 					labels = []string{}
 				}
 				output = append(output, ItemReadyJSON{
-					ID:       item.ID,
-					Title:    item.Title,
-					Priority: item.Priority,
-					Type:     string(item.Type),
-					Project:  item.Project,
-					Parent:   item.ParentID,
-					Labels:   labels,
+					ID:             item.ID,
+					Title:          item.Title,
+					Priority:       item.Priority,
+					Type:           string(item.Type),
+					Project:        item.Project,
+					Parent:         item.ParentID,
+					Labels:         labels,
+					LastActivityAt: item.LastActivityAt.Format(time.RFC3339),
 				})
 			}
 			b, err := json.MarshalIndent(output, "", "  ")
@@ -2774,13 +2775,14 @@ func printLearnings(learnings []model.Learning) {
 
 // ItemReadyJSON is the JSON serialization format for ready items.
 type ItemReadyJSON struct {
-	ID       string   `json:"id"`
-	Title    string   `json:"title"`
-	Priority int      `json:"priority"`
-	Type     string   `json:"type"`
-	Project  string   `json:"project"`
-	Parent   *string  `json:"parent"`
-	Labels   []string `json:"labels"`
+	ID             string   `json:"id"`
+	Title          string   `json:"title"`
+	Priority       int      `json:"priority"`
+	Type           string   `json:"type"`
+	Project        string   `json:"project"`
+	Parent         *string  `json:"parent"`
+	Labels         []string `json:"labels"`
+	LastActivityAt string   `json:"last_activity_at"`
 }
 
 // ItemShowJSON is the JSON serialization format for show (full detail).

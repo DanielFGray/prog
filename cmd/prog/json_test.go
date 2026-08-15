@@ -72,11 +72,12 @@ func TestReadyJSON_WithItems(t *testing.T) {
 		jsonItems := make([]ItemReadyJSON, 0, len(readyItems))
 		for _, item := range readyItems {
 			jsonItems = append(jsonItems, ItemReadyJSON{
-				ID:       item.ID,
-				Title:    item.Title,
-				Priority: item.Priority,
-				Type:     string(item.Type),
-				Parent:   item.ParentID,
+				ID:             item.ID,
+				Title:          item.Title,
+				Priority:       item.Priority,
+				Type:           string(item.Type),
+				Parent:         item.ParentID,
+				LastActivityAt: item.LastActivityAt.Format(time.RFC3339),
 			})
 		}
 		b, _ := json.MarshalIndent(jsonItems, "", "  ")
@@ -104,6 +105,9 @@ func TestReadyJSON_WithItems(t *testing.T) {
 			}
 			if r.Parent != nil {
 				t.Errorf("parent = %v, want nil", r.Parent)
+			}
+			if r.LastActivityAt == "" {
+				t.Error("last_activity_at is empty")
 			}
 		}
 		if r.ID == "ts-bbb222" {
