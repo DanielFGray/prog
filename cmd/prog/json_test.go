@@ -140,11 +140,11 @@ func TestReadyJSON_DescriptionContract(t *testing.T) {
 		t.Fatalf("ready items: %v", err)
 	}
 
+	b, err := json.MarshalIndent(readyItemsToJSON(items), "", "  ")
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
 	output := captureOutput(func() {
-		b, err := json.MarshalIndent(readyItemsToJSON(items), "", "  ")
-		if err != nil {
-			t.Fatalf("marshal: %v", err)
-		}
 		fmt.Println(string(b))
 	})
 
