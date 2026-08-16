@@ -1,45 +1,44 @@
 package main
 
 import (
-	"strings"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/baiirun/prog/internal/model"
 )
 
-func TestReviewCmd_TransitionsFromInProgress(t *testing.T) {
-	database := setupTestDB(t)
-
-	// Create a task in in_progress state
-	task := &model.Item{
-		ID:        "ts-rev001",
+func newReviewTask(t *testing.T, id string, status model.Status) *model.Item {
+	t.Helper()
+	return &model.Item{
+		ID:        id,
 		Project:   "test",
 		Type:      model.ItemTypeTask,
 		Title:     "Review test task",
-		Status:    model.StatusInProgress,
+		Status:    status,
 		Priority:  2,
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
 	}
+}
+
+func TestReviewCmd_TransitionsFromInProgress(t *testing.T) {
+	database := setupTestDB(t)
+
+	task := newReviewTask(t, "ts-rev001", model.StatusInProgress)
 	if err := database.CreateItem(task); err != nil {
 		t.Fatalf("failed to create task: %v", err)
 	}
 
-	// Simulate what reviewCmd does: check status, then update
-	item, err := database.GetItem(task.ID)
+	// Simulate what reviewCmd does: compare-and-set in_progress -> reviewing.
+	applied, err := database.CompareAndSetStatus(task.ID, model.StatusInProgress, model.StatusReviewing)
 	if err != nil {
-		t.Fatalf("failed to get item: %v", err)
+		t.Fatalf("failed to transition: %v", err)
 	}
-	if item.Status != model.StatusInProgress {
-		t.Fatalf("expected in_progress, got %s", item.Status)
-	}
-
-	if err := database.UpdateStatus(task.ID, model.StatusReviewing); err != nil {
-		t.Fatalf("failed to update status: %v", err)
+	if !applied {
+		t.Fatal("expected review to apply to an in_progress task")
 	}
 
-	// Verify the status was updated
 	got, err := database.GetItem(task.ID)
 	if err != nil {
 		t.Fatalf("failed to get task: %v", err)
@@ -49,92 +48,81 @@ func TestReviewCmd_TransitionsFromInProgress(t *testing.T) {
 	}
 }
 
-func TestReviewCmd_RejectsOpenTask(t *testing.T) {
+func TestReviewCmd_RejectsNonInProgressStatuses(t *testing.T) {
 	database := setupTestDB(t)
 
-	// Create a task in open state
-	task := &model.Item{
-		ID:        "ts-rev002",
-		Project:   "test",
-		Type:      model.ItemTypeTask,
-		Title:     "Open task",
-		Status:    model.StatusOpen,
-		Priority:  2,
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
+	statuses := []model.Status{
+		model.StatusDraft,
+		model.StatusOpen,
+		model.StatusBlocked,
+		model.StatusReviewing,
+		model.StatusDone,
+		model.StatusCanceled,
 	}
-	if err := database.CreateItem(task); err != nil {
-		t.Fatalf("failed to create task: %v", err)
-	}
+	for i, status := range statuses {
+		task := newReviewTask(t, fmt.Sprintf("ts-rev0%d", i+2), status)
+		if err := database.CreateItem(task); err != nil {
+			t.Fatalf("failed to create task: %v", err)
+		}
 
-	// Simulate what reviewCmd does: check status first
-	item, err := database.GetItem(task.ID)
-	if err != nil {
-		t.Fatalf("failed to get item: %v", err)
-	}
+		applied, err := database.CompareAndSetStatus(task.ID, model.StatusInProgress, model.StatusReviewing)
+		if err != nil {
+			t.Fatalf("unexpected error for status %s: %v", status, err)
+		}
+		if applied {
+			t.Errorf("review must not apply to a task in %s", status)
+		}
 
-	// Should reject because status is not in_progress
-	if item.Status == model.StatusInProgress {
-		t.Fatal("expected non-in_progress status")
-	}
-
-	// Verify the error message would contain the right info
-	errMsg := "can only review in_progress tasks (current status: " + string(item.Status) + ")"
-	if !strings.Contains(errMsg, "open") {
-		t.Errorf("error message should mention current status 'open', got: %s", errMsg)
+		got, err := database.GetItem(task.ID)
+		if err != nil {
+			t.Fatalf("failed to get task: %v", err)
+		}
+		if got.Status != status {
+			t.Errorf("status = %q, want %q (row must be left untouched)", got.Status, status)
+		}
 	}
 }
 
-func TestReviewCmd_RejectsDoneTask(t *testing.T) {
+// TestReviewCmd_ConcurrentDoneNotOverwritten is the race the review command used
+// to lose: a concurrent "done" lands after review's read but before its write,
+// and the stale write resurrected the completed task. The compare-and-set write
+// must fail instead.
+func TestReviewCmd_ConcurrentDoneNotOverwritten(t *testing.T) {
 	database := setupTestDB(t)
 
-	task := &model.Item{
-		ID:        "ts-rev003",
-		Project:   "test",
-		Type:      model.ItemTypeTask,
-		Title:     "Done task",
-		Status:    model.StatusDone,
-		Priority:  2,
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
-	}
+	task := newReviewTask(t, "ts-rev009", model.StatusInProgress)
 	if err := database.CreateItem(task); err != nil {
 		t.Fatalf("failed to create task: %v", err)
 	}
 
+	// Review's read sees in_progress...
 	item, err := database.GetItem(task.ID)
 	if err != nil {
 		t.Fatalf("failed to get item: %v", err)
 	}
-
-	if item.Status == model.StatusInProgress {
-		t.Fatal("expected non-in_progress status")
-	}
-}
-
-func TestReviewCmd_RejectsBlockedTask(t *testing.T) {
-	database := setupTestDB(t)
-
-	task := &model.Item{
-		ID:        "ts-rev004",
-		Project:   "test",
-		Type:      model.ItemTypeTask,
-		Title:     "Blocked task",
-		Status:    model.StatusBlocked,
-		Priority:  2,
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
-	}
-	if err := database.CreateItem(task); err != nil {
-		t.Fatalf("failed to create task: %v", err)
+	if item.Status != model.StatusInProgress {
+		t.Fatalf("expected in_progress, got %s", item.Status)
 	}
 
-	item, err := database.GetItem(task.ID)
+	// ...but a concurrent transition completes the task before review's write.
+	if err := database.UpdateStatus(task.ID, model.StatusDone); err != nil {
+		t.Fatalf("failed to complete task: %v", err)
+	}
+
+	// Review's write must fail and leave the completed task alone.
+	applied, err := database.CompareAndSetStatus(task.ID, model.StatusInProgress, model.StatusReviewing)
 	if err != nil {
-		t.Fatalf("failed to get item: %v", err)
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if applied {
+		t.Fatal("review must not resurrect a completed task")
 	}
 
-	if item.Status == model.StatusInProgress {
-		t.Fatal("expected non-in_progress status")
+	got, err := database.GetItem(task.ID)
+	if err != nil {
+		t.Fatalf("failed to get task: %v", err)
+	}
+	if got.Status != model.StatusDone {
+		t.Errorf("concurrent 'done' transition was overwritten: status = %q, want %q", got.Status, model.StatusDone)
 	}
 }

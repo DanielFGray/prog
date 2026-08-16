@@ -181,6 +181,165 @@ func TestUpdateStatus_InvalidStatus(t *testing.T) {
 	}
 }
 
+func TestCompareAndSetStatus_Success(t *testing.T) {
+	db := setupTestDB(t)
+
+	item := &model.Item{
+		ID:        "ts-cas001",
+		Project:   "test",
+		Type:      model.ItemTypeTask,
+		Title:     "CAS task",
+		Status:    model.StatusInProgress,
+		Priority:  2,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	if err := db.CreateItem(item); err != nil {
+		t.Fatalf("failed to create item: %v", err)
+	}
+
+	applied, err := db.CompareAndSetStatus(item.ID, model.StatusInProgress, model.StatusReviewing)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !applied {
+		t.Fatal("expected compare-and-set to apply")
+	}
+
+	got, err := db.GetItem(item.ID)
+	if err != nil {
+		t.Fatalf("failed to get item: %v", err)
+	}
+	if got.Status != model.StatusReviewing {
+		t.Errorf("status = %q, want %q", got.Status, model.StatusReviewing)
+	}
+}
+
+func TestCompareAndSetStatus_Mismatch(t *testing.T) {
+	db := setupTestDB(t)
+
+	item := &model.Item{
+		ID:        "ts-cas002",
+		Project:   "test",
+		Type:      model.ItemTypeTask,
+		Title:     "CAS task",
+		Status:    model.StatusDone,
+		Priority:  2,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	if err := db.CreateItem(item); err != nil {
+		t.Fatalf("failed to create item: %v", err)
+	}
+
+	applied, err := db.CompareAndSetStatus(item.ID, model.StatusInProgress, model.StatusReviewing)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if applied {
+		t.Error("expected compare-and-set not to apply when status differs")
+	}
+
+	got, err := db.GetItem(item.ID)
+	if err != nil {
+		t.Fatalf("failed to get item: %v", err)
+	}
+	if got.Status != model.StatusDone {
+		t.Errorf("status = %q, want %q (row must be left untouched)", got.Status, model.StatusDone)
+	}
+}
+
+// TestCompareAndSetStatus_ConcurrentTransitionNotOverwritten is the race the
+// review command used to lose: a caller reads in_progress, a concurrent
+// transition lands, and the stale write then overwrites it. The compare-and-set
+// must fail instead, leaving the concurrent transition intact.
+func TestCompareAndSetStatus_ConcurrentTransitionNotOverwritten(t *testing.T) {
+	db := setupTestDB(t)
+
+	item := &model.Item{
+		ID:        "ts-cas003",
+		Project:   "test",
+		Type:      model.ItemTypeTask,
+		Title:     "CAS task",
+		Status:    model.StatusInProgress,
+		Priority:  2,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	if err := db.CreateItem(item); err != nil {
+		t.Fatalf("failed to create item: %v", err)
+	}
+
+	// The review flow reads the row and sees in_progress.
+	read, err := db.GetItem(item.ID)
+	if err != nil {
+		t.Fatalf("failed to get item: %v", err)
+	}
+	if read.Status != model.StatusInProgress {
+		t.Fatalf("expected in_progress, got %s", read.Status)
+	}
+
+	// A concurrent transition marks the task done before review's write lands.
+	if err := db.UpdateStatus(item.ID, model.StatusDone); err != nil {
+		t.Fatalf("failed to complete item: %v", err)
+	}
+
+	// Review's stale write must fail and must not resurrect the done task.
+	applied, err := db.CompareAndSetStatus(item.ID, model.StatusInProgress, model.StatusReviewing)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if applied {
+		t.Fatal("compare-and-set must not overwrite a concurrent transition")
+	}
+
+	got, err := db.GetItem(item.ID)
+	if err != nil {
+		t.Fatalf("failed to get item: %v", err)
+	}
+	if got.Status != model.StatusDone {
+		t.Errorf("concurrent 'done' transition was overwritten: status = %q, want %q", got.Status, model.StatusDone)
+	}
+}
+
+func TestCompareAndSetStatus_NotFound(t *testing.T) {
+	db := setupTestDB(t)
+
+	applied, err := db.CompareAndSetStatus("nonexistent", model.StatusInProgress, model.StatusReviewing)
+	if applied {
+		t.Error("expected no update for nonexistent item")
+	}
+	if err == nil {
+		t.Error("expected error for nonexistent item")
+	}
+}
+
+func TestCompareAndSetStatus_InvalidStatus(t *testing.T) {
+	db := setupTestDB(t)
+
+	item := &model.Item{
+		ID:        "ts-cas004",
+		Project:   "test",
+		Type:      model.ItemTypeTask,
+		Title:     "CAS task",
+		Status:    model.StatusInProgress,
+		Priority:  2,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	if err := db.CreateItem(item); err != nil {
+		t.Fatalf("failed to create item: %v", err)
+	}
+
+	applied, err := db.CompareAndSetStatus(item.ID, model.StatusInProgress, model.Status("invalid"))
+	if applied {
+		t.Error("expected no update for invalid status")
+	}
+	if err == nil {
+		t.Error("expected error for invalid status")
+	}
+}
+
 func TestAppendDescription(t *testing.T) {
 	db := setupTestDB(t)
 

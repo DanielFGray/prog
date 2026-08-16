@@ -560,17 +560,19 @@ Example:
 
 		id := args[0]
 
-		// Verify the task is in_progress before transitioning
-		item, err := database.GetItem(id)
+		// Review is a compare-and-set: the in_progress check and the write are one
+		// statement, so a concurrent transition cannot land between them and be
+		// overwritten by a stale write that resurrects a completed task.
+		applied, err := database.CompareAndSetStatus(id, model.StatusInProgress, model.StatusReviewing)
 		if err != nil {
 			return err
 		}
-		if item.Status != model.StatusInProgress {
+		if !applied {
+			item, getErr := database.GetItem(id)
+			if getErr != nil {
+				return getErr
+			}
 			return fmt.Errorf("can only review in_progress tasks (current status: %s)", item.Status)
-		}
-
-		if err := database.UpdateStatus(id, model.StatusReviewing); err != nil {
-			return err
 		}
 		fmt.Printf("Marked %s as reviewing\n", id)
 

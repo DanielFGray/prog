@@ -73,6 +73,21 @@ func (db *DB) GetItem(id string) (*model.Item, error) {
 	return item, nil
 }
 
+// assertManualStatusAllowed rejects manual status writes that derivation would
+// immediately override: an epic's non-terminal status is computed from its
+// children, so only done and canceled can be forced onto it by hand.
+func (db *DB) assertManualStatusAllowed(id string, status model.Status) error {
+	var itemType string
+	err := db.QueryRow(`SELECT type FROM items WHERE id = ?`, id).Scan(&itemType)
+	if err != nil {
+		return fmt.Errorf("item not found: %s (use 'prog list' to see available items)", id)
+	}
+	if itemType == string(model.ItemTypeEpic) && status != model.StatusDone && status != model.StatusCanceled {
+		return fmt.Errorf("epic status is derived from children; only 'done' and 'canceled' can be set manually (to force-close)")
+	}
+	return nil
+}
+
 // UpdateStatus changes an item's status.
 // For epics, only terminal statuses (done, canceled) are accepted as manual overrides.
 // Non-terminal epic statuses are rejected because derivation from children would
@@ -82,14 +97,8 @@ func (db *DB) UpdateStatus(id string, status model.Status) error {
 		return fmt.Errorf("invalid status: %s", status)
 	}
 
-	// Check if item is an epic — only allow terminal status overrides
-	var itemType string
-	err := db.QueryRow(`SELECT type FROM items WHERE id = ?`, id).Scan(&itemType)
-	if err != nil {
-		return fmt.Errorf("item not found: %s (use 'prog list' to see available items)", id)
-	}
-	if itemType == string(model.ItemTypeEpic) && status != model.StatusDone && status != model.StatusCanceled {
-		return fmt.Errorf("epic status is derived from children; only 'done' and 'canceled' can be set manually (to force-close)")
+	if err := db.assertManualStatusAllowed(id, status); err != nil {
+		return err
 	}
 
 	result, err := db.Exec(`
@@ -104,6 +113,34 @@ func (db *DB) UpdateStatus(id string, status model.Status) error {
 		return fmt.Errorf("item not found: %s (use 'prog list' to see available items)", id)
 	}
 	return nil
+}
+
+// CompareAndSetStatus sets an item's status only if it currently equals expected.
+// The comparison and the write are one SQL statement, so a transition that lands
+// between a separate read and write cannot be overwritten by a stale write. It
+// reports whether the update was applied; when it was not, the row is left
+// exactly as its last writer left it.
+func (db *DB) CompareAndSetStatus(id string, expected, status model.Status) (bool, error) {
+	if !status.IsValid() {
+		return false, fmt.Errorf("invalid status: %s", status)
+	}
+
+	if err := db.assertManualStatusAllowed(id, status); err != nil {
+		return false, err
+	}
+
+	result, err := db.Exec(`
+		UPDATE items SET status = ?, updated_at = ? WHERE id = ? AND status = ?`,
+		status, time.Now(), id, expected)
+	if err != nil {
+		return false, fmt.Errorf("failed to update status: %w", err)
+	}
+
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("failed to count affected rows: %w", err)
+	}
+	return rows > 0, nil
 }
 
 // AppendDescription appends text to an item's description.
