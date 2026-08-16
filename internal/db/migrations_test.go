@@ -371,6 +371,18 @@ func TestMigrateV5_PreservesLinkedLearnings(t *testing.T) {
 		t.Errorf("search hits = %v, want the migrated learning", hits)
 	}
 
+	// Rebuilding learning_concepts must not lose its non-PK index, which the
+	// base schema and the v4 migration both create.
+	if idx := indexCount(t, db, "learning_concepts", "idx_learning_concepts_concept"); idx != 1 {
+		t.Errorf("idx_learning_concepts_concept count = %d, want 1", idx)
+	}
+	if idx := indexCount(t, db, "learnings", "idx_learnings_task"); idx != 1 {
+		t.Errorf("idx_learnings_task count = %d, want 1", idx)
+	}
+	if idx := indexCount(t, db, "learnings", "idx_learnings_status"); idx != 1 {
+		t.Errorf("idx_learnings_status count = %d, want 1", idx)
+	}
+
 	// The new delete behavior is active: deleting the task clears the link.
 	if err := db.DeleteItem(task.ID); err != nil {
 		t.Fatalf("failed to delete task after v5 migration: %v", err)
@@ -448,6 +460,21 @@ func countRows(t *testing.T, db *DB, table string) int {
 	var n int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM ` + table).Scan(&n); err != nil {
 		t.Fatalf("failed to count %s: %v", table, err)
+	}
+	return n
+}
+
+// indexCount reports whether an index with the given name exists on a table.
+// Dropping and rebuilding a table silently drops its indexes, so a migration
+// that rebuilds a table must recreate each of them or lookups lose their plan.
+func indexCount(t *testing.T, db *DB, table, name string) int {
+	t.Helper()
+	var n int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name=? AND tbl_name=?`,
+		name, table,
+	).Scan(&n); err != nil {
+		t.Fatalf("failed to count index %s on %s: %v", name, table, err)
 	}
 	return n
 }

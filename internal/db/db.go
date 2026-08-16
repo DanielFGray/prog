@@ -263,6 +263,7 @@ SELECT learning_id, concept_id FROM learning_concepts_v5;
 
 DROP TABLE learning_concepts_v5;
 
+CREATE INDEX IF NOT EXISTS idx_learning_concepts_concept ON learning_concepts(concept_id);
 CREATE INDEX IF NOT EXISTS idx_learnings_task ON learnings(task_id);
 CREATE INDEX IF NOT EXISTS idx_learnings_status ON learnings(status);
 
