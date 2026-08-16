@@ -15,7 +15,7 @@ import (
 
 // SchemaVersion is the current schema version.
 // Increment this when adding new migrations.
-const SchemaVersion = 4
+const SchemaVersion = 5
 
 // baseSchema is the original schema (version 1).
 // New tables should be added via migrations, not here.
@@ -214,6 +214,76 @@ CREATE INDEX IF NOT EXISTS idx_learning_concepts_concept ON learning_concepts(co
 
 DROP INDEX IF EXISTS idx_learnings_project;
 ALTER TABLE learnings DROP COLUMN project;
+`,
+	// Version 5: Deleting a task keeps its learnings and clears their task
+	// link. Learnings are durable knowledge; the task link is only provenance,
+	// so a deleted task must never take its learnings with it.
+	//
+	// SQLite cannot amend a foreign key clause in place, so learnings is
+	// rebuilt with task_id REFERENCES items(id) ON DELETE SET NULL. The
+	// learning_concepts junction is rebuilt alongside it because dropping
+	// learnings while the junction still references it would fail the foreign
+	// key check. The full-text triggers and index are recreated after the
+	// swap, and the FTS index is rebuilt from the new rowids.
+	`
+CREATE TABLE learnings_v5 (
+	id TEXT PRIMARY KEY,
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+	task_id TEXT REFERENCES items(id) ON DELETE SET NULL,
+	summary TEXT NOT NULL,
+	detail TEXT,
+	files TEXT,
+	status TEXT DEFAULT 'active'
+);
+
+INSERT INTO learnings_v5 (id, created_at, updated_at, task_id, summary, detail, files, status)
+SELECT id, created_at, updated_at, task_id, summary, detail, files, status FROM learnings;
+
+CREATE TABLE learning_concepts_v5 (
+	learning_id TEXT NOT NULL,
+	concept_id TEXT NOT NULL
+);
+
+INSERT INTO learning_concepts_v5 (learning_id, concept_id)
+SELECT learning_id, concept_id FROM learning_concepts;
+
+DROP TABLE learning_concepts;
+DROP TABLE learnings;
+ALTER TABLE learnings_v5 RENAME TO learnings;
+
+CREATE TABLE learning_concepts (
+	learning_id TEXT REFERENCES learnings(id),
+	concept_id TEXT REFERENCES concepts(id),
+	PRIMARY KEY (learning_id, concept_id)
+);
+
+INSERT INTO learning_concepts (learning_id, concept_id)
+SELECT learning_id, concept_id FROM learning_concepts_v5;
+
+DROP TABLE learning_concepts_v5;
+
+CREATE INDEX IF NOT EXISTS idx_learnings_task ON learnings(task_id);
+CREATE INDEX IF NOT EXISTS idx_learnings_status ON learnings(status);
+
+CREATE TRIGGER IF NOT EXISTS learnings_ai AFTER INSERT ON learnings BEGIN
+	INSERT INTO learnings_fts(rowid, summary, detail)
+	VALUES (NEW.rowid, NEW.summary, NEW.detail);
+END;
+
+CREATE TRIGGER IF NOT EXISTS learnings_ad AFTER DELETE ON learnings BEGIN
+	INSERT INTO learnings_fts(learnings_fts, rowid, summary, detail)
+	VALUES ('delete', OLD.rowid, OLD.summary, OLD.detail);
+END;
+
+CREATE TRIGGER IF NOT EXISTS learnings_au AFTER UPDATE ON learnings BEGIN
+	INSERT INTO learnings_fts(learnings_fts, rowid, summary, detail)
+	VALUES ('delete', OLD.rowid, OLD.summary, OLD.detail);
+	INSERT INTO learnings_fts(rowid, summary, detail)
+	VALUES (NEW.rowid, NEW.summary, NEW.detail);
+END;
+
+INSERT INTO learnings_fts(learnings_fts) VALUES('rebuild');
 `,
 }
 
