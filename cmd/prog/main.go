@@ -690,6 +690,8 @@ var deleteCmd = &cobra.Command{
 	Long: `Permanently delete a task or epic and all associated data.
 
 This removes the item, its logs, and any dependencies.
+Learnings linked to the item are kept with their task link cleared,
+so the knowledge survives the deletion.
 This action cannot be undone.
 
 Example:

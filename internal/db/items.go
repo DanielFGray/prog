@@ -428,6 +428,9 @@ func (db *DB) SetPriority(id string, priority int) error {
 }
 
 // DeleteItem removes an item and its associated logs and dependencies.
+// Learnings that reference the item survive: the schema's ON DELETE SET NULL
+// on learnings.task_id clears the link instead of failing the delete, so
+// knowledge outlives the task that produced it.
 func (db *DB) DeleteItem(id string) error {
 	// Check if item exists first
 	var count int

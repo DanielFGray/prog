@@ -412,6 +412,8 @@ prog learn "summary" -c concept --detail "full explanation..."
 
 The `--task` link is optional provenance. Prog never guesses it from other
 in-progress work, so omit it when the learning did not come from one task.
+Deleting a task never deletes its learnings: the schema clears the task link
+and keeps the learning, so knowledge survives the task that produced it.
 Migration to the global model removes the old project attribution from taskless
 learnings; their concepts and file references remain unchanged.
 
