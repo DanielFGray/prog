@@ -106,6 +106,7 @@ prog done ts-a1b2c3
 |---------|-------------|
 | `prog parent <id> <epic-id>` | Set task's parent epic |
 | `prog blocks <id> <other>` | Add blocking relationship (other blocked until id done) |
+| `prog unblocks <id> <other>` | Remove blocking relationship (other no longer blocked) |
 | `prog graph` | Show dependency graph |
 | `prog projects` | List all projects |
 | `prog projects rename <old> <new>` | Rename or merge a project |
@@ -243,6 +244,9 @@ prog add "Build API" -p myproject --blocks ts-frontend
 
 # Or add blocking relationship to existing tasks
 prog blocks ts-backend ts-frontend
+
+# Correct a wrong edge
+prog unblocks ts-backend ts-frontend
 
 # View all dependencies
 prog graph

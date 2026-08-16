@@ -118,6 +118,80 @@ func TestAddCmd_BlocksFlag(t *testing.T) {
 	}
 }
 
+func TestUnblocksCmd_RemovesEdge(t *testing.T) {
+	database := setupTestDB(t)
+
+	blocker := &model.Item{
+		ID:        "ts-blocker2",
+		Project:   "test",
+		Type:      model.ItemTypeTask,
+		Title:     "Blocker Task",
+		Status:    model.StatusOpen,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	if err := database.CreateItem(blocker); err != nil {
+		t.Fatalf("failed to create blocker: %v", err)
+	}
+	blockedTask := &model.Item{
+		ID:        "ts-blocked2",
+		Project:   "test",
+		Type:      model.ItemTypeTask,
+		Title:     "Blocked Task",
+		Status:    model.StatusOpen,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	if err := database.CreateItem(blockedTask); err != nil {
+		t.Fatalf("failed to create blocked task: %v", err)
+	}
+
+	// Simulate what blocksCmd does: blockedTask depends on blocker.
+	if err := database.AddDep(blockedTask.ID, blocker.ID); err != nil {
+		t.Fatalf("failed to add dep: %v", err)
+	}
+
+	// The edge keeps the blocked task out of ready.
+	readyBefore, err := database.ReadyItems("test")
+	if err != nil {
+		t.Fatalf("failed to list ready: %v", err)
+	}
+	for _, item := range readyBefore {
+		if item.ID == blockedTask.ID {
+			t.Fatal("blocked task must not be ready while the edge exists")
+		}
+	}
+
+	// Simulate what unblocksCmd does: remove the edge.
+	if err := database.RemoveDep(blockedTask.ID, blocker.ID); err != nil {
+		t.Fatalf("failed to remove dep: %v", err)
+	}
+
+	// The edge is gone, so the task shows up as ready.
+	deps, err := database.GetDeps(blockedTask.ID)
+	if err != nil {
+		t.Fatalf("failed to get deps: %v", err)
+	}
+	if len(deps) != 0 {
+		t.Errorf("expected 0 deps after unblocks, got %d", len(deps))
+	}
+
+	readyAfter, err := database.ReadyItems("test")
+	if err != nil {
+		t.Fatalf("failed to list ready: %v", err)
+	}
+	found := false
+	for _, item := range readyAfter {
+		if item.ID == blockedTask.ID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("unblocked task must be ready after edge removal")
+	}
+}
+
 func TestAddCmd_ParentFlag_InvalidParent(t *testing.T) {
 	database := setupTestDB(t)
 

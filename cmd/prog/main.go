@@ -1180,6 +1180,34 @@ Example:
 	},
 }
 
+var unblocksCmd = &cobra.Command{
+	Use:   "unblocks <id> <other-id>",
+	Short: "Remove a blocking relationship between tasks",
+	Long: `Remove a blocking relationship between two tasks.
+
+The second task no longer depends on the first. Use this to correct a
+dependency edge filed on a wrong reading of the design.
+
+Example:
+  prog unblocks ts-a1b2c3 ts-d4e5f6
+  # ts-d4e5f6 can start before ts-a1b2c3 is done`,
+	Args: cobra.ExactArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		database, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = database.Close() }()
+
+		// blocks A B means B depends on A (A blocks B)
+		if err := database.RemoveDep(args[1], args[0]); err != nil {
+			return err
+		}
+		fmt.Printf("%s no longer blocks %s\n", args[0], args[1])
+		return nil
+	},
+}
+
 var labelCmd = &cobra.Command{
 	Use:   "label <item-id> <label-name>",
 	Short: "Add a label to a task",
@@ -2469,6 +2497,7 @@ func init() {
 	rootCmd.AddCommand(projectCmd)
 	rootCmd.AddCommand(priorityCmd)
 	rootCmd.AddCommand(blocksCmd)
+	rootCmd.AddCommand(unblocksCmd)
 	rootCmd.AddCommand(labelCmd)
 	rootCmd.AddCommand(unlabelCmd)
 	rootCmd.AddCommand(learnCmd)
