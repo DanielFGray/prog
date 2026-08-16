@@ -403,6 +403,48 @@ func TestShowJSON_EmptyArrayFields(t *testing.T) {
 	}
 }
 
+func TestShowJSON_KeepsRawLogEntries(t *testing.T) {
+	database := setupTestDB(t)
+
+	item := &model.Item{
+		ID: "ts-rawlog1", Project: "test", Type: model.ItemTypeTask,
+		Title: "Raw Logs", Status: model.StatusOpen,
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+	if err := database.CreateItem(item); err != nil {
+		t.Fatalf("create item: %v", err)
+	}
+
+	for i := 0; i < 3; i++ {
+		if err := database.AddLog(item.ID, "still working"); err != nil {
+			t.Fatalf("add log: %v", err)
+		}
+	}
+
+	logs, _ := database.GetLogs(item.ID)
+	logEntries := make([]LogJSON, 0, len(logs))
+	for _, l := range logs {
+		logEntries = append(logEntries, LogJSON{
+			Message:   l.Message,
+			CreatedAt: l.CreatedAt.Format(time.RFC3339),
+		})
+	}
+	out := ItemShowJSON{ID: item.ID, Logs: logEntries}
+
+	b, err := json.Marshal(out)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var result ItemShowJSON
+	if err := json.Unmarshal(b, &result); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(result.Logs) != 3 {
+		t.Errorf("JSON must keep one entry per stored log, got %d entries", len(result.Logs))
+	}
+}
+
 func TestListJSON_WithItems(t *testing.T) {
 	database := setupTestDB(t)
 

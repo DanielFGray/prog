@@ -1242,9 +1242,12 @@ func (m Model) detailViewWithHeight(width, height int) string {
 	if len(m.detailLogs) > 0 {
 		lines = append(lines, "")
 		lines = append(lines, detailLabelStyle.Render("Logs:"))
-		for _, log := range m.detailLogs {
-			ts := dimStyle.Render(log.CreatedAt.Format("2006-01-02 15:04"))
+		for _, log := range model.CollapseLogs(m.detailLogs) {
 			msg := log.Message
+			if log.Count > 1 {
+				msg = fmt.Sprintf("%s (x%d)", msg, log.Count)
+			}
+			ts := dimStyle.Render(log.CreatedAt.Format("2006-01-02 15:04"))
 			indent := "  " + strings.Repeat(" ", 17) // Align with text after timestamp
 			if width > 0 {
 				msgWidth := effectiveWidth - 20 // Leave room for timestamp

@@ -2572,8 +2572,12 @@ func printItemDetail(item *model.Item, logs []model.Log, deps []string, concepts
 
 	if len(logs) > 0 {
 		fmt.Printf("\nLogs:\n")
-		for _, log := range logs {
-			fmt.Printf("  [%s] %s\n", log.CreatedAt.Format("2006-01-02 15:04"), log.Message)
+		for _, log := range model.CollapseLogs(logs) {
+			msg := log.Message
+			if log.Count > 1 {
+				msg = fmt.Sprintf("%s (x%d)", msg, log.Count)
+			}
+			fmt.Printf("  [%s] %s\n", log.CreatedAt.Format("2006-01-02 15:04"), msg)
 		}
 	}
 
