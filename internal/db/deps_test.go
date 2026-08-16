@@ -84,6 +84,65 @@ func TestAddDep_Duplicate(t *testing.T) {
 	}
 }
 
+func TestRemoveDep(t *testing.T) {
+	db := setupTestDB(t)
+
+	task1 := createTestItem(t, db, "Task 1")
+	task2 := createTestItem(t, db, "Task 2")
+
+	if err := db.AddDep(task2.ID, task1.ID); err != nil {
+		t.Fatalf("failed to add dep: %v", err)
+	}
+	if err := db.RemoveDep(task2.ID, task1.ID); err != nil {
+		t.Fatalf("failed to remove dep: %v", err)
+	}
+
+	deps, err := db.GetDeps(task2.ID)
+	if err != nil {
+		t.Fatalf("failed to get deps: %v", err)
+	}
+	if len(deps) != 0 {
+		t.Errorf("expected 0 deps after removal, got %d", len(deps))
+	}
+
+	// Removing the edge must unblock the dependent in the ready computation.
+	unmet, err := db.HasUnmetDeps(task2.ID)
+	if err != nil {
+		t.Fatalf("failed to check deps: %v", err)
+	}
+	if unmet {
+		t.Error("expected no unmet deps after edge removal")
+	}
+}
+
+func TestRemoveDep_NoEdge(t *testing.T) {
+	db := setupTestDB(t)
+
+	task1 := createTestItem(t, db, "Task 1")
+	task2 := createTestItem(t, db, "Task 2")
+
+	err := db.RemoveDep(task2.ID, task1.ID)
+	if err == nil {
+		t.Error("expected error when no dependency edge exists")
+	}
+}
+
+func TestRemoveDep_NonexistentItem(t *testing.T) {
+	db := setupTestDB(t)
+
+	task1 := createTestItem(t, db, "Task 1")
+
+	err := db.RemoveDep(task1.ID, "nonexistent")
+	if err == nil {
+		t.Error("expected error for nonexistent dependency")
+	}
+
+	err = db.RemoveDep("nonexistent", task1.ID)
+	if err == nil {
+		t.Error("expected error for nonexistent item")
+	}
+}
+
 func TestHasUnmetDeps(t *testing.T) {
 	db := setupTestDB(t)
 

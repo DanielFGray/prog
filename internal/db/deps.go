@@ -27,6 +27,28 @@ func (db *DB) AddDep(itemID, dependsOnID string) error {
 	return nil
 }
 
+// RemoveDep removes a dependency edge between items.
+func (db *DB) RemoveDep(itemID, dependsOnID string) error {
+	var count int
+	err := db.QueryRow(`SELECT COUNT(*) FROM items WHERE id IN (?, ?)`, itemID, dependsOnID).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("failed to verify items: %w", err)
+	}
+	if count != 2 {
+		return fmt.Errorf("one or both items not found: %s, %s (use 'prog list' to see available items)", itemID, dependsOnID)
+	}
+
+	result, err := db.Exec(`DELETE FROM deps WHERE item_id = ? AND depends_on = ?`, itemID, dependsOnID)
+	if err != nil {
+		return fmt.Errorf("failed to remove dependency: %w", err)
+	}
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("no dependency edge between %s and %s", itemID, dependsOnID)
+	}
+	return nil
+}
+
 // GetDeps returns the IDs of items that the given item depends on.
 func (db *DB) GetDeps(itemID string) ([]string, error) {
 	rows, err := db.Query(`SELECT depends_on FROM deps WHERE item_id = ?`, itemID)
