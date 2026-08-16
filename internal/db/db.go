@@ -243,28 +243,24 @@ func Open(path string) (*DB, error) {
 		return nil, fmt.Errorf("failed to create directory: %w", err)
 	}
 
-	db, err := sql.Open("sqlite", path)
+	// Apply connection-local pragmas through the DSN so they reach every
+	// connection the pool opens. database/sql creates connections lazily and
+	// reuses them, so a PRAGMA executed on one connection would not reach the
+	// ones opened later. modernc.org/sqlite runs each _pragma value on every
+	// new connection before handing it to the pool.
+	dsn := path + "?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)"
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
-	// Enable foreign keys
-	if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("failed to enable foreign keys: %w", err)
-	}
-
-	// Set busy timeout BEFORE WAL mode. The WAL mode pragma requires an
-	// exclusive lock, and without a busy timeout already set, a concurrent
-	// connection will get an immediate SQLITE_BUSY (error 261) instead of
-	// waiting. This was causing "database is locked" errors when the
+	// Enable WAL mode for better concurrency (allows concurrent readers during
+	// writes). WAL is a database property, not a connection one, so it only
+	// needs to be set once. It requires an exclusive lock; the busy timeout
+	// from the DSN is already active on this connection, so a concurrent writer
+	// is waited on instead of failing with an immediate SQLITE_BUSY (error
+	// 261). That was the cause of "database is locked" errors when the
 	// aetherflow daemon's poller and status handler hit prog concurrently.
-	if _, err := db.Exec("PRAGMA busy_timeout=5000"); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("failed to set busy timeout: %w", err)
-	}
-
-	// Enable WAL mode for better concurrency (allows concurrent readers during writes)
 	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("failed to enable WAL mode: %w", err)

@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -40,6 +41,68 @@ func TestOpen(t *testing.T) {
 	// Should create parent directories
 	if _, err := os.Stat(filepath.Dir(path)); os.IsNotExist(err) {
 		t.Error("expected directory to be created")
+	}
+}
+
+// TestPoolConnectionsEnforceForeignKeys is the regression for connection-local
+// pragmas dropping off pooled connections. Open() used to run PRAGMA
+// foreign_keys = ON on one connection, but database/sql opens new connections
+// lazily, and a connection that never ran the pragma starts with foreign keys
+// off. Every pooled connection must enforce them.
+func TestPoolConnectionsEnforceForeignKeys(t *testing.T) {
+	db := setupTestDB(t)
+
+	// Force every Conn() to open a brand-new physical connection. With a single
+	// open slot and zero idle slots, a returned connection is destroyed instead
+	// of reused, so the connection that setupTestDB exercised cannot serve this
+	// test's inserts.
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(0)
+
+	parent := &model.Item{
+		ID:        model.GenerateID(model.ItemTypeTask),
+		Project:   "test",
+		Type:      model.ItemTypeTask,
+		Title:     "parent",
+		Status:    model.StatusOpen,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	if err := db.CreateItem(parent); err != nil {
+		t.Fatalf("failed to create item: %v", err)
+	}
+
+	// Drain the connection CreateItem used so the next Conn() must open fresh.
+	ctx := context.Background()
+	drain, err := db.Conn(ctx)
+	if err != nil {
+		t.Fatalf("failed to grab connection: %v", err)
+	}
+	if err := drain.Close(); err != nil {
+		t.Fatalf("failed to close connection: %v", err)
+	}
+
+	// This Conn() opens a fresh pooled connection. If foreign keys are not
+	// applied per connection, the orphan log row is accepted.
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		t.Fatalf("failed to grab fresh connection: %v", err)
+	}
+	defer conn.Close()
+
+	_, err = conn.ExecContext(ctx,
+		"INSERT INTO logs (item_id, message) VALUES (?, ?)",
+		"ts-does-not-exist", "orphan")
+	if err == nil {
+		t.Fatal("pooled connection accepted an orphan row; foreign_keys is not applied to every connection")
+	}
+
+	var busyTimeout int
+	if err := conn.QueryRowContext(ctx, "PRAGMA busy_timeout").Scan(&busyTimeout); err != nil {
+		t.Fatalf("failed to read busy_timeout: %v", err)
+	}
+	if busyTimeout != 5000 {
+		t.Errorf("busy_timeout on pooled connection = %d, want 5000", busyTimeout)
 	}
 }
 
