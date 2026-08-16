@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/baiirun/prog/internal/model"
 )
 
 // setupV3DB builds a database frozen at schema version 3, where learnings and
@@ -32,6 +34,34 @@ func setupV3DB(t *testing.T) *DB {
 		}
 	}
 	if err := db.setSchemaVersion(3); err != nil {
+		t.Fatalf("failed to set schema version: %v", err)
+	}
+	return db
+}
+
+// setupV4DB builds a database frozen at schema version 4, where concepts are
+// already global but learnings.task_id still references items with no delete
+// behavior.
+func setupV4DB(t *testing.T) *DB {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "v4.db")
+
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("failed to open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	if _, err := db.Exec(baseSchema); err != nil {
+		t.Fatalf("failed to create base schema: %v", err)
+	}
+	// migrations[0], [1], and [2] upgrade to v2, v3, and v4.
+	for i, m := range migrations[:3] {
+		if _, err := db.Exec(m); err != nil {
+			t.Fatalf("failed to apply migration to v%d: %v", i+2, err)
+		}
+	}
+	if err := db.setSchemaVersion(4); err != nil {
 		t.Fatalf("failed to set schema version: %v", err)
 	}
 	return db
@@ -266,6 +296,91 @@ func TestMigrateV4_EmptySchema(t *testing.T) {
 	}
 	if len(got) != 1 {
 		t.Errorf("concepts = %d, want 1", len(got))
+	}
+}
+
+// TestMigrateV5_PreservesLinkedLearnings covers the v5 upgrade, which rebuilds
+// learnings so that deleting a task clears the learning's task link instead of
+// failing on the foreign key. A v4 database holding a task-linked learning must
+// come out of the migration with the learning, its concepts, and its link
+// intact, searchable through FTS, and with the new delete behavior active.
+func TestMigrateV5_PreservesLinkedLearnings(t *testing.T) {
+	db := setupV4DB(t)
+
+	task := &model.Item{
+		ID:        model.GenerateID(model.ItemTypeTask),
+		Project:   "test",
+		Type:      model.ItemTypeTask,
+		Title:     "Task that will be deleted",
+		Status:    model.StatusInProgress,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	if err := db.CreateItem(task); err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+
+	now := time.Now()
+	learning := &model.Learning{
+		ID:        model.GenerateLearningID(),
+		CreatedAt: now,
+		UpdatedAt: now,
+		TaskID:    &task.ID,
+		Summary:   "Token refresh has race condition",
+		Detail:    "Retry with exponential backoff",
+		Status:    model.LearningStatusActive,
+		Concepts:  []string{"auth"},
+	}
+	if err := db.CreateLearning(learning); err != nil {
+		t.Fatalf("failed to create learning: %v", err)
+	}
+
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("migration to v5 failed: %v", err)
+	}
+
+	version, err := db.getSchemaVersion()
+	if err != nil {
+		t.Fatalf("failed to read schema version: %v", err)
+	}
+	if version != SchemaVersion {
+		t.Errorf("schema version = %d, want %d", version, SchemaVersion)
+	}
+
+	// The learning and its task link survive the rebuild.
+	got, err := db.GetLearning(learning.ID)
+	if err != nil {
+		t.Fatalf("learning lost in migration: %v", err)
+	}
+	if got.TaskID == nil || *got.TaskID != task.ID {
+		t.Errorf("taskID = %v, want %q preserved through migration", got.TaskID, task.ID)
+	}
+	if got.Summary != learning.Summary {
+		t.Errorf("summary = %q, want %q", got.Summary, learning.Summary)
+	}
+	if len(got.Concepts) != 1 || got.Concepts[0] != "auth" {
+		t.Errorf("concepts = %v, want the concept link to survive", got.Concepts)
+	}
+
+	// The FTS index was rebuilt against the new rowids.
+	hits, err := db.SearchLearnings("backoff", false)
+	if err != nil {
+		t.Fatalf("failed to search learnings: %v", err)
+	}
+	if len(hits) != 1 || hits[0].ID != learning.ID {
+		t.Errorf("search hits = %v, want the migrated learning", hits)
+	}
+
+	// The new delete behavior is active: deleting the task clears the link.
+	if err := db.DeleteItem(task.ID); err != nil {
+		t.Fatalf("failed to delete task after v5 migration: %v", err)
+	}
+	got, err = db.GetLearning(learning.ID)
+	if err != nil {
+		t.Fatalf("learning lost with task: %v", err)
+	}
+	if got.TaskID != nil {
+		t.Errorf("taskID = %v, want nil after task deletion", *got.TaskID)
 	}
 }
 

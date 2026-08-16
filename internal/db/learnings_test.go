@@ -1220,3 +1220,61 @@ func TestGetRelatedConcepts_CrossesProjects(t *testing.T) {
 		t.Errorf("related = %v, want the globally shared auth concept", related)
 	}
 }
+
+// --- Task deletion ---
+
+// TestDeleteItem_PreservesLinkedLearnings is the regression test for task
+// deletion with learning provenance. Learnings are durable knowledge; a task's
+// deletion must not take them along. The schema clears learnings.task_id via
+// ON DELETE SET NULL, so the learning survives with its concepts intact and its
+// task link severed.
+func TestDeleteItem_PreservesLinkedLearnings(t *testing.T) {
+	db := setupTestDB(t)
+
+	task := &model.Item{
+		ID:        model.GenerateID(model.ItemTypeTask),
+		Project:   "test",
+		Type:      model.ItemTypeTask,
+		Title:     "Task that will be deleted",
+		Status:    model.StatusInProgress,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	if err := db.CreateItem(task); err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+
+	now := time.Now()
+	learning := &model.Learning{
+		ID:        model.GenerateLearningID(),
+		CreatedAt: now,
+		UpdatedAt: now,
+		TaskID:    &task.ID,
+		Summary:   "Token refresh has race condition",
+		Status:    model.LearningStatusActive,
+		Concepts:  []string{"auth"},
+	}
+	if err := db.CreateLearning(learning); err != nil {
+		t.Fatalf("failed to create learning: %v", err)
+	}
+
+	// Deleting the task must succeed despite the learning pointing at it.
+	if err := db.DeleteItem(task.ID); err != nil {
+		t.Fatalf("failed to delete task with linked learning: %v", err)
+	}
+
+	// The task is gone, but the learning survives with its link cleared.
+	got, err := db.GetLearning(learning.ID)
+	if err != nil {
+		t.Fatalf("learning was lost with the task: %v", err)
+	}
+	if got.TaskID != nil {
+		t.Errorf("taskID = %v, want nil after task deletion", *got.TaskID)
+	}
+	if got.Summary != learning.Summary {
+		t.Errorf("summary = %q, want %q", got.Summary, learning.Summary)
+	}
+	if len(got.Concepts) != 1 || got.Concepts[0] != "auth" {
+		t.Errorf("concepts = %v, want the linked concept to survive", got.Concepts)
+	}
+}
