@@ -191,6 +191,50 @@ func TestCreateItem_InvalidStatus(t *testing.T) {
 	}
 }
 
+func TestDeleteItem_DetachesChildren(t *testing.T) {
+	db := setupTestDB(t)
+
+	epic := &model.Item{
+		ID:        model.GenerateID(model.ItemTypeEpic),
+		Project:   "test",
+		Type:      model.ItemTypeEpic,
+		Title:     "Epic",
+		Status:    model.StatusOpen,
+		Priority:  2,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	if err := db.CreateItem(epic); err != nil {
+		t.Fatalf("failed to create epic: %v", err)
+	}
+	child := &model.Item{
+		ID:        model.GenerateID(model.ItemTypeTask),
+		Project:   "test",
+		Type:      model.ItemTypeTask,
+		Title:     "Child",
+		Status:    model.StatusOpen,
+		Priority:  2,
+		ParentID:  &epic.ID,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	if err := db.CreateItem(child); err != nil {
+		t.Fatalf("failed to create child: %v", err)
+	}
+
+	if err := db.DeleteItem(epic.ID); err != nil {
+		t.Fatalf("failed to delete epic: %v", err)
+	}
+
+	var parentID *string
+	if err := db.QueryRow(`SELECT parent_id FROM items WHERE id = ?`, child.ID).Scan(&parentID); err != nil {
+		t.Fatalf("failed to query child: %v", err)
+	}
+	if parentID != nil {
+		t.Errorf("child parent_id = %q, want NULL", *parentID)
+	}
+}
+
 func TestGetItem_NotFound(t *testing.T) {
 	db := setupTestDB(t)
 
