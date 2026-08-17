@@ -428,13 +428,22 @@ func (db *DB) SetPriority(id string, priority int) error {
 }
 
 // DeleteItem removes an item and its associated logs and dependencies.
+// Child items are detached first: parent_id is a self-referencing foreign key
+// with no ON DELETE action, so a parent epic could not otherwise be deleted
+// while its children still point at it. Children survive as standalone items.
 // Learnings that reference the item survive: the schema's ON DELETE SET NULL
 // on learnings.task_id clears the link instead of failing the delete, so
 // knowledge outlives the task that produced it.
 func (db *DB) DeleteItem(id string) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
 	// Check if item exists first
 	var count int
-	err := db.QueryRow(`SELECT COUNT(*) FROM items WHERE id = ?`, id).Scan(&count)
+	err = tx.QueryRow(`SELECT COUNT(*) FROM items WHERE id = ?`, id).Scan(&count)
 	if err != nil {
 		return fmt.Errorf("failed to check item: %w", err)
 	}
@@ -442,23 +451,33 @@ func (db *DB) DeleteItem(id string) error {
 		return fmt.Errorf("item not found: %s (use 'prog list' to see available items)", id)
 	}
 
+	// Detach children so the self-referencing parent_id foreign key does not
+	// block deleting a parent epic.
+	_, err = tx.Exec(`UPDATE items SET parent_id = NULL WHERE parent_id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("failed to detach children: %w", err)
+	}
+
 	// Delete logs
-	_, err = db.Exec(`DELETE FROM logs WHERE item_id = ?`, id)
+	_, err = tx.Exec(`DELETE FROM logs WHERE item_id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("failed to delete logs: %w", err)
 	}
 
 	// Delete dependencies (both directions)
-	_, err = db.Exec(`DELETE FROM deps WHERE item_id = ? OR depends_on = ?`, id, id)
+	_, err = tx.Exec(`DELETE FROM deps WHERE item_id = ? OR depends_on = ?`, id, id)
 	if err != nil {
 		return fmt.Errorf("failed to delete dependencies: %w", err)
 	}
 
 	// Delete the item
-	_, err = db.Exec(`DELETE FROM items WHERE id = ?`, id)
+	_, err = tx.Exec(`DELETE FROM items WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("failed to delete item: %w", err)
 	}
 
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
 	return nil
 }

@@ -1278,3 +1278,55 @@ func TestDeleteItem_PreservesLinkedLearnings(t *testing.T) {
 		t.Errorf("concepts = %v, want the linked concept to survive", got.Concepts)
 	}
 }
+
+// TestDeleteItem_DetachesChildren is the regression test for deleting an epic
+// that still has children. items.parent_id is a self-referencing foreign key
+// with no ON DELETE action, so the delete previously failed with a constraint
+// error. Children must be detached and survive as standalone items.
+func TestDeleteItem_DetachesChildren(t *testing.T) {
+	db := setupTestDB(t)
+
+	epic := &model.Item{
+		ID:        model.GenerateID(model.ItemTypeEpic),
+		Project:   "test",
+		Type:      model.ItemTypeEpic,
+		Title:     "Epic with children",
+		Status:    model.StatusOpen,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	if err := db.CreateItem(epic); err != nil {
+		t.Fatalf("failed to create epic: %v", err)
+	}
+
+	child := &model.Item{
+		ID:        model.GenerateID(model.ItemTypeTask),
+		Project:   "test",
+		Type:      model.ItemTypeTask,
+		Title:     "Child task",
+		Status:    model.StatusOpen,
+		ParentID:  &epic.ID,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	if err := db.CreateItem(child); err != nil {
+		t.Fatalf("failed to create child: %v", err)
+	}
+
+	// Deleting the epic must succeed despite the child still pointing at it.
+	if err := db.DeleteItem(epic.ID); err != nil {
+		t.Fatalf("failed to delete epic with children: %v", err)
+	}
+
+	// The child survives, detached from its parent.
+	got, err := db.GetItem(child.ID)
+	if err != nil {
+		t.Fatalf("child was lost with the epic: %v", err)
+	}
+	if got.ParentID != nil {
+		t.Errorf("child parent = %v, want nil after epic deletion", *got.ParentID)
+	}
+	if got.Title != child.Title {
+		t.Errorf("child title = %q, want %q", got.Title, child.Title)
+	}
+}
