@@ -2,6 +2,7 @@
 /prog
 /tasks
 /cmd/tasks/tasks
+/.bin
 
 # Test
 *.test
