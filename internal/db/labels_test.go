@@ -420,3 +420,52 @@ func TestEnsureLabel(t *testing.T) {
 		t.Error("ensure created duplicate label")
 	}
 }
+
+// TestDeleteItem_RemovesItemLabels is the regression test for task deletion
+// with attached labels. item_labels.item_id references items(id) with no
+// ON DELETE action, so DeleteItem must clear the junction rows before the
+// item is removed or the foreign key constraint fails. The labels themselves
+// are shared and survive the deletion.
+func TestDeleteItem_RemovesItemLabels(t *testing.T) {
+	db := setupTestDB(t)
+
+	now := time.Now()
+	item := &model.Item{
+		ID:        model.GenerateID(model.ItemTypeTask),
+		Project:   "test",
+		Type:      model.ItemTypeTask,
+		Title:     "Labeled task",
+		Status:    model.StatusOpen,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := db.CreateItem(item); err != nil {
+		t.Fatalf("failed to create item: %v", err)
+	}
+
+	labelNames := []string{"bug", "urgent"}
+	for _, name := range labelNames {
+		if err := db.AddLabelToItem(item.ID, "test", name); err != nil {
+			t.Fatalf("failed to add label %s: %v", name, err)
+		}
+	}
+	labels, err := db.GetItemLabels(item.ID)
+	if err != nil {
+		t.Fatalf("failed to get item labels: %v", err)
+	}
+	if len(labels) != 2 {
+		t.Fatalf("got %d labels, want 2", len(labels))
+	}
+
+	// Deleting the labeled task must succeed despite the junction rows.
+	if err := db.DeleteItem(item.ID); err != nil {
+		t.Fatalf("failed to delete item with labels: %v", err)
+	}
+
+	// The item is gone, but the labels survive for other items to use.
+	for _, name := range labelNames {
+		if _, err := db.GetLabelByName("test", name); err != nil {
+			t.Errorf("label %s was lost with the task: %v", name, err)
+		}
+	}
+}

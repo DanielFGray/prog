@@ -427,13 +427,15 @@ func (db *DB) SetPriority(id string, priority int) error {
 	return nil
 }
 
-// DeleteItem removes an item and its associated logs and dependencies.
-// Child items are detached first: parent_id is a self-referencing foreign key
-// with no ON DELETE action, so a parent epic could not otherwise be deleted
-// while its children still point at it. Children survive as standalone items.
-// Learnings that reference the item survive: the schema's ON DELETE SET NULL
-// on learnings.task_id clears the link instead of failing the delete, so
-// knowledge outlives the task that produced it.
+// DeleteItem removes an item and its associated logs, dependencies, and label
+// associations. Child items are detached first: parent_id is a self-referencing
+// foreign key with no ON DELETE action, so a parent epic could not otherwise be
+// deleted while its children still point at it. Children survive as standalone
+// items. The item_labels junction is cleared because its item_id foreign key has
+// no ON DELETE action; the labels themselves are shared and survive. Learnings
+// that reference the item survive: the schema's ON DELETE SET NULL on
+// learnings.task_id clears the link instead of failing the delete, so knowledge
+// outlives the task that produced it.
 func (db *DB) DeleteItem(id string) error {
 	tx, err := db.Begin()
 	if err != nil {
@@ -468,6 +470,12 @@ func (db *DB) DeleteItem(id string) error {
 	_, err = tx.Exec(`DELETE FROM deps WHERE item_id = ? OR depends_on = ?`, id, id)
 	if err != nil {
 		return fmt.Errorf("failed to delete dependencies: %w", err)
+	}
+
+	// Delete label associations (the labels themselves are shared and survive)
+	_, err = tx.Exec(`DELETE FROM item_labels WHERE item_id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("failed to delete label associations: %w", err)
 	}
 
 	// Delete the item
