@@ -428,7 +428,7 @@ func tableColumns(t *testing.T, db *DB, table string) []string {
 	if err != nil {
 		t.Fatalf("failed to read columns of %s: %v", table, err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var cols []string
 	for rows.Next() {
 		var name string

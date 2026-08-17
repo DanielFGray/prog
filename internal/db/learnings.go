@@ -108,7 +108,7 @@ func (db *DB) GetLearning(id string) (*model.Learning, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to get concepts: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	for rows.Next() {
 		var concept string
@@ -136,7 +136,7 @@ func (db *DB) ListConcepts(sortByRecent bool) ([]model.Concept, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to list concepts: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var concepts []model.Concept
 	for rows.Next() {
@@ -309,7 +309,7 @@ func (db *DB) GetLearningsByConcepts(conceptNames []string, includeStale bool) (
 	if err != nil {
 		return nil, fmt.Errorf("failed to query learnings: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var learnings []model.Learning
 	for rows.Next() {
@@ -341,12 +341,12 @@ func (db *DB) GetLearningsByConcepts(conceptNames []string, includeStale bool) (
 		for conceptRows.Next() {
 			var concept string
 			if err := conceptRows.Scan(&concept); err != nil {
-				conceptRows.Close()
+				_ = conceptRows.Close()
 				return nil, fmt.Errorf("failed to scan concept: %w", err)
 			}
 			l.Concepts = append(l.Concepts, concept)
 		}
-		conceptRows.Close()
+		_ = conceptRows.Close()
 
 		learnings = append(learnings, l)
 	}
@@ -376,7 +376,7 @@ func (db *DB) SearchLearnings(query string, includeStale bool) ([]model.Learning
 	if err != nil {
 		return nil, fmt.Errorf("failed to search learnings: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var learnings []model.Learning
 	for rows.Next() {
@@ -408,12 +408,12 @@ func (db *DB) SearchLearnings(query string, includeStale bool) ([]model.Learning
 		for conceptRows.Next() {
 			var concept string
 			if err := conceptRows.Scan(&concept); err != nil {
-				conceptRows.Close()
+				_ = conceptRows.Close()
 				return nil, fmt.Errorf("failed to scan concept: %w", err)
 			}
 			l.Concepts = append(l.Concepts, concept)
 		}
-		conceptRows.Close()
+		_ = conceptRows.Close()
 
 		learnings = append(learnings, l)
 	}
@@ -443,7 +443,7 @@ func (db *DB) ListConceptsWithStats() ([]ConceptStats, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to list concept stats: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var stats []ConceptStats
 	now := time.Now()
@@ -497,7 +497,7 @@ func (db *DB) GetAllLearnings(includeStale bool) ([]model.Learning, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to query learnings: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var learnings []model.Learning
 	for rows.Next() {
@@ -529,12 +529,12 @@ func (db *DB) GetAllLearnings(includeStale bool) ([]model.Learning, error) {
 		for conceptRows.Next() {
 			var concept string
 			if err := conceptRows.Scan(&concept); err != nil {
-				conceptRows.Close()
+				_ = conceptRows.Close()
 				return nil, fmt.Errorf("failed to scan concept: %w", err)
 			}
 			l.Concepts = append(l.Concepts, concept)
 		}
-		conceptRows.Close()
+		_ = conceptRows.Close()
 
 		learnings = append(learnings, l)
 	}

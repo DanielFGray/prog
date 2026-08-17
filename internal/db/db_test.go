@@ -88,7 +88,7 @@ func TestPoolConnectionsEnforceForeignKeys(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to grab fresh connection: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	_, err = conn.ExecContext(ctx,
 		"INSERT INTO logs (item_id, message) VALUES (?, ?)",
