@@ -235,6 +235,58 @@ func TestDeleteItem_DetachesChildren(t *testing.T) {
 	}
 }
 
+func TestDeleteItem_ClearsAssociatedRecords(t *testing.T) {
+	db := setupTestDB(t)
+
+	item := &model.Item{
+		ID:        model.GenerateID(model.ItemTypeTask),
+		Project:   "test",
+		Type:      model.ItemTypeTask,
+		Title:     "Task",
+		Status:    model.StatusOpen,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	if err := db.CreateItem(item); err != nil {
+		t.Fatalf("failed to create item: %v", err)
+	}
+	if err := db.AddLabelToItem(item.ID, item.Project, "bug"); err != nil {
+		t.Fatalf("failed to add label: %v", err)
+	}
+
+	learning := &model.Learning{
+		ID:        model.GenerateLearningID(),
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		TaskID:    &item.ID,
+		Summary:   "Keep provenance optional",
+		Status:    model.LearningStatusActive,
+	}
+	if err := db.CreateLearning(learning); err != nil {
+		t.Fatalf("failed to create learning: %v", err)
+	}
+
+	if err := db.DeleteItem(item.ID); err != nil {
+		t.Fatalf("failed to delete item: %v", err)
+	}
+
+	var labelCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM item_labels WHERE item_id = ?`, item.ID).Scan(&labelCount); err != nil {
+		t.Fatalf("failed to query item labels: %v", err)
+	}
+	if labelCount != 0 {
+		t.Errorf("item label count = %d, want 0", labelCount)
+	}
+
+	var taskID *string
+	if err := db.QueryRow(`SELECT task_id FROM learnings WHERE id = ?`, learning.ID).Scan(&taskID); err != nil {
+		t.Fatalf("failed to query learning: %v", err)
+	}
+	if taskID != nil {
+		t.Errorf("learning task_id = %q, want NULL", *taskID)
+	}
+}
+
 func TestGetItem_NotFound(t *testing.T) {
 	db := setupTestDB(t)
 

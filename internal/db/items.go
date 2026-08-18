@@ -478,6 +478,12 @@ func (db *DB) DeleteItem(id string) error {
 		return fmt.Errorf("failed to delete label associations: %w", err)
 	}
 
+	// Learning links are optional provenance, so preserve the learning and clear its item.
+	_, err = tx.Exec(`UPDATE learnings SET task_id = NULL WHERE task_id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("failed to detach learnings: %w", err)
+	}
+
 	// Delete the item
 	_, err = tx.Exec(`DELETE FROM items WHERE id = ?`, id)
 	if err != nil {
