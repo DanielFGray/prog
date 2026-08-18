@@ -2805,6 +2805,7 @@ type ItemReadyJSON struct {
 	Project        string   `json:"project"`
 	Parent         *string  `json:"parent"`
 	Labels         []string `json:"labels"`
+	CreatedAt      string   `json:"created_at"`
 	LastActivityAt string   `json:"last_activity_at"`
 }
 
@@ -2825,6 +2826,7 @@ func readyItemsToJSON(items []model.Item) []ItemReadyJSON {
 			Project:        item.Project,
 			Parent:         item.ParentID,
 			Labels:         labels,
+			CreatedAt:      item.CreatedAt.Format(time.RFC3339),
 			LastActivityAt: item.LastActivityAt.Format(time.RFC3339),
 		})
 	}
