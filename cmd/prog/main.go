@@ -2528,13 +2528,13 @@ func printItemsTable(items []model.Item) {
 		return
 	}
 
-	fmt.Printf("%-12s %-12s %-4s %s\n", "ID", "STATUS", "PRI", "TITLE")
+	fmt.Printf("%-12s %-12s %-4s %-12s %s\n", "ID", "STATUS", "PRI", "PROJECT", "TITLE")
 	for _, item := range items {
 		title := item.Title
 		if len(item.Labels) > 0 {
 			title = formatLabels(item.Labels) + " " + title
 		}
-		fmt.Printf("%-12s %-12s %-4d %s\n", item.ID, item.Status, item.Priority, title)
+		fmt.Printf("%-12s %-12s %-4d %-12s %s\n", item.ID, item.Status, item.Priority, item.Project, title)
 	}
 }
 
