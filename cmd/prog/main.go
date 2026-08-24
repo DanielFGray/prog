@@ -227,6 +227,10 @@ Examples:
 
 		fmt.Println(item.ID)
 
+		if len(flagAddLabels) == 0 {
+			fmt.Fprintf(os.Stderr, "note: no labels set; consider `prog label %s bug|feature|refactor|chore`\n", item.ID)
+		}
+
 		// Backup after successful mutation
 		database.BackupQuiet()
 
