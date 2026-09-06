@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>prog / work map</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ccircle cx='12' cy='12' r='7' fill='%2388baff'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="./style.css">
+  <script type="importmap">{"imports":{"three":"./vendor/three.module.js"}}</script>
+</head>
+<body>
+  <header>
+    <a class="brand" href="/">prog<span> / work map</span></a>
+    <span class="read-only">READ ONLY</span>
+    <button id="refresh" title="Read changes made in the CLI">Refresh</button>
+  </header>
+  <aside id="navigator" aria-label="Graph navigation">
+    <div class="section-heading">WORKSPACE</div>
+    <label for="project">Project</label>
+    <select id="project"><option value="">All projects</option></select>
+    <label for="search">Find work</label>
+    <input id="search" type="search" placeholder="Title, ID, or description" autocomplete="off">
+    <div class="filter-row">
+      <label>Status
+        <div class="multiselect" id="status">
+          <button type="button" id="status-toggle" aria-haspopup="listbox" aria-expanded="false">All statuses</button>
+          <div id="status-menu" class="multiselect-menu" role="listbox" aria-multiselectable="true" hidden></div>
+        </div>
+      </label>
+      <label>Label
+        <div class="multiselect" id="label">
+          <button type="button" id="label-toggle" aria-haspopup="listbox" aria-expanded="false">All labels</button>
+          <div id="label-menu" class="multiselect-menu" role="listbox" aria-multiselectable="true" hidden></div>
+        </div>
+      </label>
+    </div>
+    <label class="check"><input id="hide-done" type="checkbox"> Hide completed work</label>
+    <div class="section-heading list-heading"><span id="list-title">EPICS</span><span id="list-count"></span></div>
+    <div id="work-list" role="list" aria-label="Epics and search results"></div>
+    <p class="nav-note">Epics open into families of work. Select one to explore its subtasks.</p>
+  </aside>
+  <main id="viewport" aria-label="Interactive 3D task graph">
+    <div id="scene"></div>
+    <div id="scene-toolbar">
+      <div><div class="section-heading">SPATIAL OVERVIEW</div><div id="counts" role="status">Loading work...</div></div>
+      <div class="view-actions"><button id="collapse">Collapse all</button><button id="fit">Fit view</button></div>
+    </div>
+    <div id="error" role="alert" hidden></div>
+    <div id="empty" hidden>No work matches these filters.</div>
+    <div id="tooltip" role="tooltip" hidden></div>
+    <div id="scene-footer">
+      <span><i class="epic-key"></i> Epic <i class="task-key"></i> Task</span>
+      <span class="mouse-help">Drag to orbit / Scroll to zoom / Right-drag to pan</span>
+      <span class="touch-help">Drag to orbit / Pinch to zoom / Tap for details</span>
+    </div>
+  </main>
+  <aside id="detail" aria-label="Task details" hidden></aside>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

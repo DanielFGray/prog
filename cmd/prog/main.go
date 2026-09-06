@@ -14,6 +14,7 @@ import (
 	"github.com/baiirun/prog/internal/db"
 	"github.com/baiirun/prog/internal/model"
 	"github.com/baiirun/prog/internal/tui"
+	"github.com/baiirun/prog/internal/web"
 	"github.com/spf13/cobra"
 )
 
@@ -79,6 +80,9 @@ var (
 	flagDoD              string
 	flagDesc             string
 	flagJSON             bool
+	flagWebPort          int
+	flagWebHost          string
+	flagWebNoOpen        bool
 )
 
 func openDB() (*db.DB, error) {
@@ -2387,6 +2391,27 @@ Press q to quit.`,
 	},
 }
 
+var webCmd = &cobra.Command{
+	Use:   "web",
+	Short: "Serve the 3D dependency graph in the browser",
+	Long: `Start a localhost server and open the 3D dependency graph.
+
+Spatial epic clusters in Three.js. The overview shows epics and standalone
+tasks; expand an epic to inspect nested epics and subtasks. Dependency lines
+are real edges, including sibling dependencies.
+Labels appear on hover only. Filter by project, status, label, and search;
+click a node for detail and navigation.
+
+Examples:
+  prog web
+  prog web --port 9000
+  prog web --no-open
+  prog web --host 0.0.0.0`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return web.Serve(flagWebHost, flagWebPort, flagWebNoOpen)
+	},
+}
+
 func init() {
 	// Global flags
 	rootCmd.PersistentFlags().StringVarP(&flagProject, "project", "p", "", "Project scope for task and label commands")
@@ -2474,6 +2499,11 @@ func init() {
 	// backup flags
 	backupCmd.Flags().BoolVarP(&flagBackupQuiet, "quiet", "q", false, "Silent backup (no output)")
 
+	// web flags
+	webCmd.Flags().IntVar(&flagWebPort, "port", 8765, "Port to listen on (0 = pick one)")
+	webCmd.Flags().StringVar(&flagWebHost, "host", "127.0.0.1", "Address to bind to (e.g. 0.0.0.0 to allow remote access)")
+	webCmd.Flags().BoolVar(&flagWebNoOpen, "no-open", false, "Serve only, do not open the browser")
+
 	rootCmd.AddCommand(initCmd)
 	rootCmd.AddCommand(addCmd)
 	rootCmd.AddCommand(listCmd)
@@ -2512,6 +2542,7 @@ func init() {
 	rootCmd.AddCommand(compactCmd)
 	rootCmd.AddCommand(onboardCmd)
 	rootCmd.AddCommand(tuiCmd)
+	rootCmd.AddCommand(webCmd)
 	rootCmd.AddCommand(backupCmd)
 	rootCmd.AddCommand(backupsCmd)
 	rootCmd.AddCommand(restoreCmd)

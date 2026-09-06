@@ -123,6 +123,23 @@ prog done ts-a1b2c3
 | `prog label <id> <name>` | Add label to task (creates if needed) |
 | `prog unlabel <id> <name>` | Remove label from task |
 
+### Web graph
+
+`prog web --no-open` serves the local Three.js dependency graph. The default
+view is an epic-first overview: each top-level epic is a spatial cluster and
+standalone tasks remain visible. Click an epic and choose Expand to inspect its
+children, including nested epics. Collapse returns to the overview.
+
+The graph draws actual dependency relationships. In the overview, edges between
+hidden descendants are aggregated between their visible epic representatives;
+the detail view still reports the underlying edges. Sibling dependencies remain
+visible when both siblings are visible. Labels are hover-only, and status and
+project filters are inclusion filters. Refresh reads the database again and
+shows an error banner if the server cannot load the graph.
+
+Orbit with drag, zoom with the wheel, pan with the right mouse button, press
+`f` to refit, and press `Esc` to close details. The page is read-only.
+
 ### Flags
 
 | Flag | Commands | Description |
