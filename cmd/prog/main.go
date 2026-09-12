@@ -15,6 +15,7 @@ import (
 	"github.com/baiirun/prog/internal/model"
 	"github.com/baiirun/prog/internal/tui"
 	"github.com/baiirun/prog/internal/web"
+	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 )
 
@@ -915,12 +916,20 @@ var editCmd = &cobra.Command{
 
 With --title, updates the title directly without opening an editor.
 With --dod, sets or clears the definition of done (use "" to clear).
-Without flags, opens the description in your configured editor.
+Without flags, opens the description in your configured editor (interactive; requires a TTY).
+
+For non-interactive / agent use, prefer:
+  prog desc <id> "text"     # replace description
+  prog append <id> "text"   # append to description
+  prog edit <id> --title "..."
+  prog edit <id> --dod "..."
 
 Uses $PROG_EDITOR if set, otherwise defaults to nvim, then nano, then vi.
 
 Examples:
-  prog edit ts-a1b2c3                     # Edit description in editor
+  prog desc ts-a1b2c3 "New description"   # Replace description (scriptable)
+  prog append ts-a1b2c3 "Handoff note"    # Append to description
+  prog edit ts-a1b2c3                     # Edit description in editor (TTY)
   prog edit ts-a1b2c3 --title "New title" # Update title directly
   prog edit ts-a1b2c3 --dod "Tests pass"  # Set definition of done
   prog edit ts-a1b2c3 --dod ""            # Clear definition of done
@@ -940,6 +949,10 @@ Examples:
 		}
 		if edited {
 			return nil
+		}
+
+		if err := ensureInteractiveEditor(); err != nil {
+			return err
 		}
 
 		// Get current description
@@ -1045,6 +1058,24 @@ func editItem(database *db.DB, id, title string, titleChanged bool, dodValue str
 // execCommand wraps exec.Command for testing
 var execCommand = func(name string, arg ...string) *exec.Cmd {
 	return exec.Command(name, arg...)
+}
+
+// stdinIsTerminal reports whether stdin is an interactive terminal.
+// Overridable in tests.
+var stdinIsTerminal = func() bool {
+	return isatty.IsTerminal(os.Stdin.Fd()) || isatty.IsCygwinTerminal(os.Stdin.Fd())
+}
+
+func ensureInteractiveEditor() error {
+	if stdinIsTerminal() {
+		return nil
+	}
+	return fmt.Errorf(`prog edit opens an interactive editor; stdin is not a terminal.
+For agents/scripts, use:
+  prog desc <id> "full description"   # replace description
+  prog append <id> "note"             # append to description
+  prog edit <id> --title "..."        # set title
+  prog edit <id> --dod "..."          # set definition of done`)
 }
 
 var descCmd = &cobra.Command{
@@ -3175,8 +3206,11 @@ prog add "title" -l bug               # With label
 prog add "title" -e                   # New epic
 
 # Editing
-prog append <id> "text"        # Add to description
-prog label <id> <name>         # Add label to task
+prog append <id> "text"              # Add to description
+prog desc <id> "text"                # Replace description (scriptable)
+prog edit <id> --title "..."         # Set title
+prog edit <id> --dod "..."           # Set definition of done
+prog label <id> <name>               # Add label to task
 
 # Context retrieval
 prog context -c concept        # Load learnings for a concept

@@ -49,3 +49,50 @@ func TestEditItemAppliesTitleAndDefinitionOfDone(t *testing.T) {
 		}
 	}
 }
+
+func TestEnsureInteractiveEditor_AllowsTTY(t *testing.T) {
+	orig := stdinIsTerminal
+	stdinIsTerminal = func() bool { return true }
+	t.Cleanup(func() { stdinIsTerminal = orig })
+
+	if err := ensureInteractiveEditor(); err != nil {
+		t.Fatalf("expected nil on TTY, got %v", err)
+	}
+}
+
+func TestEnsureInteractiveEditor_RefusesNonTTY(t *testing.T) {
+	orig := stdinIsTerminal
+	stdinIsTerminal = func() bool { return false }
+	t.Cleanup(func() { stdinIsTerminal = orig })
+
+	err := ensureInteractiveEditor()
+	if err == nil {
+		t.Fatal("expected error when stdin is not a terminal")
+	}
+	msg := err.Error()
+	for _, want := range []string{
+		"stdin is not a terminal",
+		`prog desc <id>`,
+		`prog append <id>`,
+		`prog edit <id> --title`,
+		`prog edit <id> --dod`,
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error %q does not contain %q", msg, want)
+		}
+	}
+}
+
+func TestEditCmdHelpMentionsScriptableAlternatives(t *testing.T) {
+	help := editCmd.Long
+	for _, want := range []string{
+		`prog desc <id>`,
+		`prog append <id>`,
+		"non-interactive",
+		"requires a TTY",
+	} {
+		if !strings.Contains(help, want) {
+			t.Errorf("edit help missing %q", want)
+		}
+	}
+}
