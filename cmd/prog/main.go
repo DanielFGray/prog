@@ -726,10 +726,18 @@ var logCmd = &cobra.Command{
 	Short: "Add a log entry to a task",
 	Long: `Add a timestamped log entry to a task's audit trail.
 
-Use this to track progress while working.
+Use this to track progress while working, including decisions made and facts
+discovered that only matter to THIS task's history — a design choice, a
+tradeoff picked, a scope change, why a run was stopped.
+
+Not for knowledge a future agent on a DIFFERENT task would want to find —
+that's a pattern, gotcha, or reusable insight, and belongs in
+'prog learn' instead so it surfaces via 'prog context', not buried in one
+task's log.
 
 Example:
-  prog log ts-a1b2c3 "Implemented token refresh logic"`,
+  prog log ts-a1b2c3 "Implemented token refresh logic"
+  prog log ts-a1b2c3 "DECISION: last-write-wins for concurrent edits, rejected optimistic locking as overkill for this scale"`,
 	Args: cobra.MinimumNArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		database, err := openDB()
@@ -1313,8 +1321,10 @@ var learnCmd = &cobra.Command{
 	Short: "Log a learning for future context retrieval",
 	Long: `Log a learning discovered during work.
 
-Learnings capture tacit knowledge—insights that aren't obvious from code alone.
-They're stored with a two-phase structure for efficient context retrieval:
+Learnings capture tacit knowledge—insights that aren't obvious from code alone,
+and that a future agent on ANY task would want, not just this one: a pattern,
+a gotcha, a reusable fact about how the system behaves. They're stored with a
+two-phase structure for efficient context retrieval:
 
   Summary (required): One-liner (≤120 chars) for quick scanning
   Detail (optional): Full explanation with context, examples, and caveats
@@ -1322,8 +1332,17 @@ They're stored with a two-phase structure for efficient context retrieval:
 Learnings are tagged with concepts for organized retrieval.
 Concepts are created automatically if they don't exist.
 
-Use --task to record the task where the learning was discovered. The link is
-optional and is never inferred from other active work.
+NOT FOR: a decision, fact, or outcome specific to one task's own history (why
+you chose X over Y for that feature, what happened during that run). That
+belongs in 'prog log <id> <message>' instead — it's the task's audit trail,
+not durable knowledge other work needs to rediscover. Ask: would an agent on
+a DIFFERENT task want this? If no, use 'log', not 'learn'.
+
+Use --task to record the task where a learning was DISCOVERED (e.g. you hit
+a gotcha while working ts-a1b2c3, but the gotcha itself applies beyond that
+task). The link is optional, never inferred from other active work, and is
+not what makes something task-specific — a learning with --task set is still
+meant to be found by unrelated future work via 'prog context'.
 
 CONTEXT MANAGEMENT FLOW:
 ┌─────────────────────────────────────────────────────────────┐
@@ -1358,7 +1377,7 @@ LEARNING STRUCTURE:
 Examples:
   prog learn "Token refresh has race condition" -c auth -c concurrency
   prog learn "Config loaded from env first" -c config -f config.go
-  prog learn "Migration detail" -c database --task ts-a1b2c3
+  prog learn "Migrations require the built binary, not go run" -c database --task ts-a1b2c3
   prog learn "Token refresh issue" -c auth --detail "The mutex only protects..."
   echo "multi-line detail" | prog learn "summary" -c auth --detail -`,
 	Args: cobra.MinimumNArgs(1),
@@ -3161,9 +3180,12 @@ Good learnings are specific and actionable:
   ✓ prog learn "Schema migrations need built binary" -c database \
       --detail "go run doesn't embed assets; must use go build first"
 
-Not learnings (use prog log instead):
+Not learnings (use prog log <id> instead):
   ✗ "Fixed the auth bug"
   ✗ "This file handles authentication"
+  ✗ "Decided last-write-wins for this feature's conflict handling"
+    (a decision specific to ONE task's outcome — log it on that task;
+     learn is for facts a DIFFERENT task's agent would also want)
 
 NEVER end a session without updating task state.
 Work is NOT complete until prog reflects reality.
