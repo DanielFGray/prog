@@ -121,6 +121,19 @@ type Concept struct {
 	LearningCount int // Derived from learning_concepts join
 }
 
+// LearningSource is a file reference attached to a learning, with optional
+// line bounds and note. Path is required. Line shapes:
+//   - neither bound set: whole file
+//   - start only: exact line
+//   - both bounds: inclusive range (end >= start, both positive)
+type LearningSource struct {
+	ID        string // src-XXXXXX
+	Path      string
+	StartLine *int
+	EndLine   *int
+	Note      string
+}
+
 // Learning represents a piece of knowledge discovered during work.
 type Learning struct {
 	ID        string // lrn-XXXXXX
@@ -129,7 +142,8 @@ type Learning struct {
 	TaskID    *string // Optional link to the task that discovered this
 	Summary   string  // One-liner
 	Detail    string  // Full context
-	Files     []string
+	Sources   []LearningSource
+	Files     []string // Derived from Sources paths for non-DB callers
 	Status    LearningStatus
 	Concepts  []string // Associated concept names
 }
@@ -141,6 +155,15 @@ func GenerateLearningID() string {
 		panic("crypto/rand failed: " + err.Error())
 	}
 	return "lrn-" + hex.EncodeToString(b)
+}
+
+// GenerateLearningSourceID returns a new source ID with src- prefix and 6 hex chars.
+func GenerateLearningSourceID() string {
+	b := make([]byte, 3)
+	if _, err := rand.Read(b); err != nil {
+		panic("crypto/rand failed: " + err.Error())
+	}
+	return "src-" + hex.EncodeToString(b)
 }
 
 // Match signal identifiers for KnowledgeHit reasons. Stable user-facing contract:

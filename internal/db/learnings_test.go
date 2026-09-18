@@ -64,8 +64,181 @@ func TestCreateLearning(t *testing.T) {
 	if len(got.Files) != 2 {
 		t.Errorf("files count = %d, want 2", len(got.Files))
 	}
+	if len(got.Sources) != 2 {
+		t.Errorf("sources count = %d, want 2", len(got.Sources))
+	}
+	srcPaths := map[string]bool{}
+	for _, s := range got.Sources {
+		srcPaths[s.Path] = true
+		if s.StartLine != nil || s.EndLine != nil {
+			t.Errorf("path-only source %q has unexpected lines", s.Path)
+		}
+	}
+	if !srcPaths["file1.go"] || !srcPaths["file2.go"] {
+		t.Errorf("sources = %v, want file1.go and file2.go", got.Sources)
+	}
 	if len(got.Concepts) != 2 {
 		t.Errorf("concepts count = %d, want 2", len(got.Concepts))
+	}
+}
+
+func intPtr(n int) *int { return &n }
+
+func TestCreateLearning_LineRangeRoundTrip(t *testing.T) {
+	db := setupTestDB(t)
+
+	now := time.Now()
+	exact := 42
+	start, end := 10, 20
+	learning := &model.Learning{
+		ID:        model.GenerateLearningID(),
+		CreatedAt: now,
+		UpdatedAt: now,
+		Summary:   "Line-addressable evidence",
+		Status:    model.LearningStatusActive,
+		Sources: []model.LearningSource{
+			{Path: "a.go", StartLine: &exact},
+			{Path: "b.go", StartLine: &start, EndLine: &end, Note: "range note"},
+			{Path: "c.go"},
+		},
+	}
+	if err := db.CreateLearning(learning); err != nil {
+		t.Fatalf("failed to create learning: %v", err)
+	}
+
+	got, err := db.GetLearning(learning.ID)
+	if err != nil {
+		t.Fatalf("failed to get learning: %v", err)
+	}
+	if len(got.Sources) != 3 {
+		t.Fatalf("sources = %d, want 3", len(got.Sources))
+	}
+	byPath := map[string]model.LearningSource{}
+	for _, s := range got.Sources {
+		byPath[s.Path] = s
+	}
+	if byPath["a.go"].StartLine == nil || *byPath["a.go"].StartLine != 42 || byPath["a.go"].EndLine != nil {
+		t.Errorf("a.go = %+v, want exact line 42", byPath["a.go"])
+	}
+	if byPath["b.go"].StartLine == nil || *byPath["b.go"].StartLine != 10 ||
+		byPath["b.go"].EndLine == nil || *byPath["b.go"].EndLine != 20 ||
+		byPath["b.go"].Note != "range note" {
+		t.Errorf("b.go = %+v, want range 10-20 with note", byPath["b.go"])
+	}
+	if byPath["c.go"].StartLine != nil || byPath["c.go"].EndLine != nil {
+		t.Errorf("c.go = %+v, want path-only", byPath["c.go"])
+	}
+	if len(got.Files) != 3 {
+		t.Errorf("derived files = %v, want 3 paths", got.Files)
+	}
+}
+
+func TestCreateLearning_RejectsInvalidLineRanges(t *testing.T) {
+	db := setupTestDB(t)
+	now := time.Now()
+
+	cases := []struct {
+		name    string
+		sources []model.LearningSource
+	}{
+		{"zero start", []model.LearningSource{{Path: "a.go", StartLine: intPtr(0)}}},
+		{"negative start", []model.LearningSource{{Path: "a.go", StartLine: intPtr(-1)}}},
+		{"end before start", []model.LearningSource{{Path: "a.go", StartLine: intPtr(5), EndLine: intPtr(2)}}},
+		{"end without start", []model.LearningSource{{Path: "a.go", EndLine: intPtr(3)}}},
+		{"empty path", []model.LearningSource{{Path: ""}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			learning := &model.Learning{
+				ID:        model.GenerateLearningID(),
+				CreatedAt: now,
+				UpdatedAt: now,
+				Summary:   "invalid",
+				Status:    model.LearningStatusActive,
+				Sources:   tc.sources,
+			}
+			if err := db.CreateLearning(learning); err == nil {
+				t.Fatal("expected validation error")
+			}
+		})
+	}
+}
+
+func TestCreateLearning_RejectsDuplicateSources(t *testing.T) {
+	db := setupTestDB(t)
+	now := time.Now()
+	line := 7
+	learning := &model.Learning{
+		ID:        model.GenerateLearningID(),
+		CreatedAt: now,
+		UpdatedAt: now,
+		Summary:   "dupes",
+		Status:    model.LearningStatusActive,
+		Sources: []model.LearningSource{
+			{Path: "same.go", StartLine: &line},
+			{Path: "same.go", StartLine: &line},
+		},
+	}
+	if err := db.CreateLearning(learning); err == nil {
+		t.Fatal("expected duplicate source rejection")
+	}
+}
+
+func TestCreateLearning_TrimsSourcePaths(t *testing.T) {
+	db := setupTestDB(t)
+	now := time.Now()
+	learning := &model.Learning{
+		ID:        model.GenerateLearningID(),
+		CreatedAt: now,
+		UpdatedAt: now,
+		Summary:   "trimmed path",
+		Status:    model.LearningStatusActive,
+		Sources:   []model.LearningSource{{Path: "  spaced.go  "}},
+	}
+	if err := db.CreateLearning(learning); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	got, err := db.GetLearning(learning.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if len(got.Sources) != 1 || got.Sources[0].Path != "spaced.go" {
+		t.Errorf("sources = %v, want path trimmed to spaced.go", got.Sources)
+	}
+	if len(got.Files) != 1 || got.Files[0] != "spaced.go" {
+		t.Errorf("files = %v, want derived trimmed path", got.Files)
+	}
+}
+
+func TestDeleteLearning_CascadesSources(t *testing.T) {
+	db := setupTestDB(t)
+	now := time.Now()
+	learning := &model.Learning{
+		ID:        model.GenerateLearningID(),
+		CreatedAt: now,
+		UpdatedAt: now,
+		Summary:   "will delete",
+		Status:    model.LearningStatusActive,
+		Files:     []string{"gone.go"},
+	}
+	if err := db.CreateLearning(learning); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM learning_sources WHERE learning_id = ?`, learning.ID).Scan(&n); err != nil {
+		t.Fatalf("count sources: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("sources before delete = %d, want 1", n)
+	}
+	if err := db.DeleteLearning(learning.ID); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM learning_sources WHERE learning_id = ?`, learning.ID).Scan(&n); err != nil {
+		t.Fatalf("count sources after: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("sources after delete = %d, want 0", n)
 	}
 }
 

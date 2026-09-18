@@ -1,7 +1,7 @@
 package db
 
 import (
-	"encoding/json"
+	"database/sql"
 	"fmt"
 	"sort"
 	"strings"
@@ -20,23 +20,22 @@ func (db *DB) CreateLearning(l *model.Learning) error {
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	// Serialize files to JSON
-	filesJSON := "[]"
-	if len(l.Files) > 0 {
-		b, err := json.Marshal(l.Files)
-		if err != nil {
-			return fmt.Errorf("failed to marshal files: %w", err)
-		}
-		filesJSON = string(b)
+	sources, err := resolveLearningSources(l)
+	if err != nil {
+		return err
 	}
 
 	// Insert learning
 	_, err = tx.Exec(`
-		INSERT INTO learnings (id, created_at, updated_at, task_id, summary, detail, files, status)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`, l.ID, l.CreatedAt, l.UpdatedAt, l.TaskID, l.Summary, l.Detail, filesJSON, l.Status)
+		INSERT INTO learnings (id, created_at, updated_at, task_id, summary, detail, status)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, l.ID, l.CreatedAt, l.UpdatedAt, l.TaskID, l.Summary, l.Detail, l.Status)
 	if err != nil {
 		return fmt.Errorf("failed to insert learning: %w", err)
+	}
+
+	if err := insertLearningSources(tx, l.ID, sources); err != nil {
+		return err
 	}
 
 	// Ensure concepts exist and create associations
@@ -76,29 +75,154 @@ func (db *DB) CreateLearning(l *model.Learning) error {
 		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
+	l.Sources = sources
+	deriveLearningFiles(l)
+	return nil
+}
+
+// resolveLearningSources returns Sources as the authority, falling back to
+// path-only rows derived from Files when Sources is empty (CLI callers).
+func resolveLearningSources(l *model.Learning) ([]model.LearningSource, error) {
+	if len(l.Sources) > 0 {
+		out := make([]model.LearningSource, len(l.Sources))
+		copy(out, l.Sources)
+		for i := range out {
+			out[i].Path = strings.TrimSpace(out[i].Path)
+			if err := validateLearningSource(out[i]); err != nil {
+				return nil, err
+			}
+			if out[i].ID == "" {
+				out[i].ID = model.GenerateLearningSourceID()
+			}
+		}
+		return out, nil
+	}
+	out := make([]model.LearningSource, 0, len(l.Files))
+	for _, path := range l.Files {
+		s := model.LearningSource{
+			ID:   model.GenerateLearningSourceID(),
+			Path: strings.TrimSpace(path),
+		}
+		if err := validateLearningSource(s); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, nil
+}
+
+func validateLearningSource(s model.LearningSource) error {
+	if s.Path == "" {
+		return fmt.Errorf("learning source path is required")
+	}
+	switch {
+	case s.StartLine == nil && s.EndLine == nil:
+		return nil
+	case s.StartLine != nil && s.EndLine == nil:
+		if *s.StartLine < 1 {
+			return fmt.Errorf("learning source start line must be positive")
+		}
+		return nil
+	case s.StartLine == nil && s.EndLine != nil:
+		return fmt.Errorf("learning source end line requires start line")
+	default:
+		if *s.StartLine < 1 || *s.EndLine < 1 {
+			return fmt.Errorf("learning source line numbers must be positive")
+		}
+		if *s.EndLine < *s.StartLine {
+			return fmt.Errorf("learning source end line must not be before start line")
+		}
+		return nil
+	}
+}
+
+func insertLearningSources(tx *sql.Tx, learningID string, sources []model.LearningSource) error {
+	for _, s := range sources {
+		_, err := tx.Exec(`
+			INSERT INTO learning_sources (id, learning_id, path, start_line, end_line, note)
+			VALUES (?, ?, ?, ?, ?, ?)
+		`, s.ID, learningID, s.Path, s.StartLine, s.EndLine, nullIfEmpty(s.Note))
+		if err != nil {
+			if isUniqueConstraintError(err) {
+				return fmt.Errorf("duplicate learning source for path %q: %w", s.Path, err)
+			}
+			return fmt.Errorf("failed to insert learning source: %w", err)
+		}
+	}
+	return nil
+}
+
+func nullIfEmpty(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
+func isUniqueConstraintError(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), "unique")
+}
+
+func deriveLearningFiles(l *model.Learning) {
+	l.Files = make([]string, 0, len(l.Sources))
+	for _, s := range l.Sources {
+		l.Files = append(l.Files, s.Path)
+	}
+}
+
+func (db *DB) loadLearningSources(learningID string) ([]model.LearningSource, error) {
+	rows, err := db.Query(`
+		SELECT id, path, start_line, end_line, note
+		FROM learning_sources
+		WHERE learning_id = ?
+		ORDER BY path, ifnull(start_line, -1), ifnull(end_line, -1), id
+	`, learningID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get learning sources: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var sources []model.LearningSource
+	for rows.Next() {
+		var s model.LearningSource
+		var note sql.NullString
+		if err := rows.Scan(&s.ID, &s.Path, &s.StartLine, &s.EndLine, &note); err != nil {
+			return nil, fmt.Errorf("failed to scan learning source: %w", err)
+		}
+		if note.Valid {
+			s.Note = note.String
+		}
+		sources = append(sources, s)
+	}
+	return sources, nil
+}
+
+func (db *DB) attachLearningEvidence(l *model.Learning) error {
+	sources, err := db.loadLearningSources(l.ID)
+	if err != nil {
+		return err
+	}
+	l.Sources = sources
+	deriveLearningFiles(l)
 	return nil
 }
 
 // GetLearning retrieves a learning by ID.
 func (db *DB) GetLearning(id string) (*model.Learning, error) {
 	var l model.Learning
-	var filesJSON string
 	var taskID *string
 
 	err := db.QueryRow(`
-		SELECT id, created_at, updated_at, task_id, summary, detail, files, status
+		SELECT id, created_at, updated_at, task_id, summary, detail, status
 		FROM learnings WHERE id = ?
-	`, id).Scan(&l.ID, &l.CreatedAt, &l.UpdatedAt, &taskID, &l.Summary, &l.Detail, &filesJSON, &l.Status)
+	`, id).Scan(&l.ID, &l.CreatedAt, &l.UpdatedAt, &taskID, &l.Summary, &l.Detail, &l.Status)
 	if err != nil {
 		return nil, fmt.Errorf("learning not found: %s", id)
 	}
 	l.TaskID = taskID
 
-	// Parse files JSON
-	if filesJSON != "" && filesJSON != "[]" {
-		if err := json.Unmarshal([]byte(filesJSON), &l.Files); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal files: %w", err)
-		}
+	if err := db.attachLearningEvidence(&l); err != nil {
+		return nil, err
 	}
 
 	// Get associated concepts
@@ -298,7 +422,7 @@ func (db *DB) GetLearningsByConcepts(conceptNames []string, includeStale bool) (
 
 	query := `
 		SELECT DISTINCT l.id, l.created_at, l.updated_at, l.task_id,
-			l.summary, l.detail, l.files, l.status
+			l.summary, l.detail, l.status
 		FROM learnings l
 		JOIN learning_concepts lc ON lc.learning_id = l.id
 		JOIN concepts c ON c.id = lc.concept_id
@@ -316,19 +440,15 @@ func (db *DB) GetLearningsByConcepts(conceptNames []string, includeStale bool) (
 	var learnings []model.Learning
 	for rows.Next() {
 		var l model.Learning
-		var filesJSON string
 		var taskID *string
 		if err := rows.Scan(&l.ID, &l.CreatedAt, &l.UpdatedAt, &taskID,
-			&l.Summary, &l.Detail, &filesJSON, &l.Status); err != nil {
+			&l.Summary, &l.Detail, &l.Status); err != nil {
 			return nil, fmt.Errorf("failed to scan learning: %w", err)
 		}
 		l.TaskID = taskID
 
-		// Parse files JSON
-		if filesJSON != "" && filesJSON != "[]" {
-			if err := json.Unmarshal([]byte(filesJSON), &l.Files); err != nil {
-				return nil, fmt.Errorf("failed to unmarshal files: %w", err)
-			}
+		if err := db.attachLearningEvidence(&l); err != nil {
+			return nil, err
 		}
 
 		// Get associated concepts
@@ -366,7 +486,7 @@ func (db *DB) SearchLearnings(query string, includeStale bool) ([]model.Learning
 
 	sqlQuery := `
 		SELECT l.id, l.created_at, l.updated_at, l.task_id,
-			l.summary, l.detail, l.files, l.status
+			l.summary, l.detail, l.status
 		FROM learnings l
 		JOIN learnings_fts fts ON l.rowid = fts.rowid
 		WHERE learnings_fts MATCH ?
@@ -383,19 +503,15 @@ func (db *DB) SearchLearnings(query string, includeStale bool) ([]model.Learning
 	var learnings []model.Learning
 	for rows.Next() {
 		var l model.Learning
-		var filesJSON string
 		var taskID *string
 		if err := rows.Scan(&l.ID, &l.CreatedAt, &l.UpdatedAt, &taskID,
-			&l.Summary, &l.Detail, &filesJSON, &l.Status); err != nil {
+			&l.Summary, &l.Detail, &l.Status); err != nil {
 			return nil, fmt.Errorf("failed to scan learning: %w", err)
 		}
 		l.TaskID = taskID
 
-		// Parse files JSON
-		if filesJSON != "" && filesJSON != "[]" {
-			if err := json.Unmarshal([]byte(filesJSON), &l.Files); err != nil {
-				return nil, fmt.Errorf("failed to unmarshal files: %w", err)
-			}
+		if err := db.attachLearningEvidence(&l); err != nil {
+			return nil, err
 		}
 
 		// Get associated concepts
@@ -550,8 +666,8 @@ func (db *DB) SearchKnowledge(q model.KnowledgeQuery) ([]model.KnowledgeHit, err
 		}
 
 		contextLower := strings.ToLower(strings.Join([]string{text, taskTitle, taskDesc}, " "))
-		for _, file := range l.Files {
-			fileLower := strings.ToLower(file)
+		for _, src := range l.Sources {
+			fileLower := strings.ToLower(src.Path)
 			if fileLower == "" {
 				continue
 			}
@@ -559,7 +675,7 @@ func (db *DB) SearchKnowledge(q model.KnowledgeQuery) ([]model.KnowledgeHit, err
 				(taskTitle != "" && strings.Contains(strings.ToLower(taskTitle), fileLower)) ||
 				(taskDesc != "" && strings.Contains(strings.ToLower(taskDesc), fileLower)) ||
 				(contextLower != "" && strings.Contains(contextLower, fileLower)) {
-				add(model.MatchFilePath, file)
+				add(model.MatchFilePath, src.Path)
 			}
 		}
 
@@ -803,7 +919,7 @@ func (db *DB) GetAllLearnings(includeStale bool) ([]model.Learning, error) {
 
 	query := `
 		SELECT l.id, l.created_at, l.updated_at, l.task_id,
-			l.summary, l.detail, l.files, l.status
+			l.summary, l.detail, l.status
 		FROM learnings l
 		WHERE 1 = 1
 		` + statusFilter + `
@@ -819,19 +935,15 @@ func (db *DB) GetAllLearnings(includeStale bool) ([]model.Learning, error) {
 	var learnings []model.Learning
 	for rows.Next() {
 		var l model.Learning
-		var filesJSON string
 		var taskID *string
 		if err := rows.Scan(&l.ID, &l.CreatedAt, &l.UpdatedAt, &taskID,
-			&l.Summary, &l.Detail, &filesJSON, &l.Status); err != nil {
+			&l.Summary, &l.Detail, &l.Status); err != nil {
 			return nil, fmt.Errorf("failed to scan learning: %w", err)
 		}
 		l.TaskID = taskID
 
-		// Parse files JSON
-		if filesJSON != "" && filesJSON != "[]" {
-			if err := json.Unmarshal([]byte(filesJSON), &l.Files); err != nil {
-				return nil, fmt.Errorf("failed to unmarshal files: %w", err)
-			}
+		if err := db.attachLearningEvidence(&l); err != nil {
+			return nil, err
 		}
 
 		// Get associated concepts

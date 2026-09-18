@@ -15,7 +15,7 @@ import (
 
 // SchemaVersion is the current schema version.
 // Increment this when adding new migrations.
-const SchemaVersion = 5
+const SchemaVersion = 6
 
 // baseSchema is the original schema (version 1).
 // New tables should be added via migrations, not here.
@@ -285,6 +285,47 @@ CREATE TRIGGER IF NOT EXISTS learnings_au AFTER UPDATE ON learnings BEGIN
 END;
 
 INSERT INTO learnings_fts(learnings_fts) VALUES('rebuild');
+`,
+	// Version 6: Normalize learning file evidence into learning_sources with
+	// optional line ranges. Each distinct non-empty legacy files JSON path
+	// becomes one path-only row (duplicate -f values collapse); the files
+	// column is then dropped. Sources cascade with their learning. Uniqueness
+	// is per learning+path+line shape (NULLs coalesced) so duplicate path-only
+	// or identical ranges are rejected after migration.
+	`
+CREATE TABLE learning_sources (
+	id TEXT PRIMARY KEY,
+	learning_id TEXT NOT NULL REFERENCES learnings(id) ON DELETE CASCADE,
+	path TEXT NOT NULL,
+	start_line INTEGER,
+	end_line INTEGER,
+	note TEXT,
+	CHECK (
+		(start_line IS NULL AND end_line IS NULL)
+		OR (start_line IS NOT NULL AND start_line > 0 AND end_line IS NULL)
+		OR (start_line IS NOT NULL AND end_line IS NOT NULL
+			AND start_line > 0 AND end_line >= start_line)
+	)
+);
+
+CREATE UNIQUE INDEX idx_learning_sources_unique
+ON learning_sources(learning_id, path, ifnull(start_line, -1), ifnull(end_line, -1));
+
+INSERT INTO learning_sources (id, learning_id, path)
+SELECT DISTINCT
+	l.id || '/' || trim(j.value),
+	l.id,
+	trim(j.value)
+FROM learnings l
+JOIN json_each(
+	CASE
+		WHEN l.files IS NULL OR l.files = '' THEN '[]'
+		ELSE l.files
+	END
+) AS j
+WHERE typeof(j.value) = 'text' AND trim(j.value) != '';
+
+ALTER TABLE learnings DROP COLUMN files;
 `,
 }
 

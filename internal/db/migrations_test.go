@@ -67,6 +67,32 @@ func setupV4DB(t *testing.T) *DB {
 	return db
 }
 
+// setupV5DB builds a database frozen at schema version 5, where learnings still
+// store file paths as a JSON array in the files column.
+func setupV5DB(t *testing.T) *DB {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "v5.db")
+
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("failed to open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	if _, err := db.Exec(baseSchema); err != nil {
+		t.Fatalf("failed to create base schema: %v", err)
+	}
+	for i, m := range migrations[:4] {
+		if _, err := db.Exec(m); err != nil {
+			t.Fatalf("failed to apply migration to v%d: %v", i+2, err)
+		}
+	}
+	if err := db.setSchemaVersion(5); err != nil {
+		t.Fatalf("failed to set schema version: %v", err)
+	}
+	return db
+}
+
 // TestMigrateV4_MergesProjectScopedConcepts is the regression test for the move
 // to global knowledge. It builds a v3 dataset where the same concept name lives
 // in three projects with different summaries and timestamps, and where one
@@ -321,18 +347,28 @@ func TestMigrateV5_PreservesLinkedLearnings(t *testing.T) {
 	}
 
 	now := time.Now()
-	learning := &model.Learning{
-		ID:        model.GenerateLearningID(),
-		CreatedAt: now,
-		UpdatedAt: now,
-		TaskID:    &task.ID,
-		Summary:   "Token refresh has race condition",
-		Detail:    "Retry with exponential backoff",
-		Status:    model.LearningStatusActive,
-		Concepts:  []string{"auth"},
+	learningID := model.GenerateLearningID()
+	conceptID := model.GenerateConceptID()
+	if _, err := db.Exec(
+		`INSERT INTO concepts (id, name, last_updated) VALUES (?, ?, ?)`,
+		conceptID, "auth", now,
+	); err != nil {
+		t.Fatalf("failed to insert concept: %v", err)
 	}
-	if err := db.CreateLearning(learning); err != nil {
-		t.Fatalf("failed to create learning: %v", err)
+	if _, err := db.Exec(
+		`INSERT INTO learnings (id, created_at, updated_at, task_id, summary, detail, files, status)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		learningID, now, now, task.ID,
+		"Token refresh has race condition", "Retry with exponential backoff",
+		"[]", model.LearningStatusActive,
+	); err != nil {
+		t.Fatalf("failed to insert learning: %v", err)
+	}
+	if _, err := db.Exec(
+		`INSERT INTO learning_concepts (learning_id, concept_id) VALUES (?, ?)`,
+		learningID, conceptID,
+	); err != nil {
+		t.Fatalf("failed to link concept: %v", err)
 	}
 
 	if err := db.Migrate(); err != nil {
@@ -348,15 +384,15 @@ func TestMigrateV5_PreservesLinkedLearnings(t *testing.T) {
 	}
 
 	// The learning and its task link survive the rebuild.
-	got, err := db.GetLearning(learning.ID)
+	got, err := db.GetLearning(learningID)
 	if err != nil {
 		t.Fatalf("learning lost in migration: %v", err)
 	}
 	if got.TaskID == nil || *got.TaskID != task.ID {
 		t.Errorf("taskID = %v, want %q preserved through migration", got.TaskID, task.ID)
 	}
-	if got.Summary != learning.Summary {
-		t.Errorf("summary = %q, want %q", got.Summary, learning.Summary)
+	if got.Summary != "Token refresh has race condition" {
+		t.Errorf("summary = %q, want Token refresh has race condition", got.Summary)
 	}
 	if len(got.Concepts) != 1 || got.Concepts[0] != "auth" {
 		t.Errorf("concepts = %v, want the concept link to survive", got.Concepts)
@@ -367,7 +403,7 @@ func TestMigrateV5_PreservesLinkedLearnings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to search learnings: %v", err)
 	}
-	if len(hits) != 1 || hits[0].ID != learning.ID {
+	if len(hits) != 1 || hits[0].ID != learningID {
 		t.Errorf("search hits = %v, want the migrated learning", hits)
 	}
 
@@ -387,12 +423,106 @@ func TestMigrateV5_PreservesLinkedLearnings(t *testing.T) {
 	if err := db.DeleteItem(task.ID); err != nil {
 		t.Fatalf("failed to delete task after v5 migration: %v", err)
 	}
-	got, err = db.GetLearning(learning.ID)
+	got, err = db.GetLearning(learningID)
 	if err != nil {
 		t.Fatalf("learning lost with task: %v", err)
 	}
 	if got.TaskID != nil {
 		t.Errorf("taskID = %v, want nil after task deletion", *got.TaskID)
+	}
+}
+
+// TestMigrateV6_NormalizesFileEvidence covers the v6 upgrade: files JSON becomes
+// learning_sources rows, the files column is removed, and evidence survives task
+// deletion (learnings stay; only the task link clears).
+func TestMigrateV6_NormalizesFileEvidence(t *testing.T) {
+	db := setupV5DB(t)
+
+	task := &model.Item{
+		ID:        model.GenerateID(model.ItemTypeTask),
+		Project:   "test",
+		Type:      model.ItemTypeTask,
+		Title:     "Task that will be deleted",
+		Status:    model.StatusInProgress,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	if err := db.CreateItem(task); err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+
+	now := time.Now()
+	learningID := model.GenerateLearningID()
+	if _, err := db.Exec(
+		`INSERT INTO learnings (id, created_at, updated_at, task_id, summary, detail, files, status)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		learningID, now, now, task.ID,
+		"File evidence survives", "Detail about sources",
+		`["internal/db/learnings.go","cmd/prog/main.go","internal/db/learnings.go"]`,
+		model.LearningStatusActive,
+	); err != nil {
+		t.Fatalf("failed to insert learning with files JSON: %v", err)
+	}
+
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("migration to v6 failed: %v", err)
+	}
+
+	version, err := db.getSchemaVersion()
+	if err != nil {
+		t.Fatalf("failed to read schema version: %v", err)
+	}
+	if version != SchemaVersion {
+		t.Errorf("schema version = %d, want %d", version, SchemaVersion)
+	}
+
+	var filesCol int
+	if err := db.QueryRow(`
+		SELECT COUNT(*) FROM pragma_table_info('learnings') WHERE name = 'files'
+	`).Scan(&filesCol); err != nil {
+		t.Fatalf("failed to check files column: %v", err)
+	}
+	if filesCol != 0 {
+		t.Errorf("files column still present after v6 migration")
+	}
+
+	got, err := db.GetLearning(learningID)
+	if err != nil {
+		t.Fatalf("learning lost in migration: %v", err)
+	}
+	if len(got.Sources) != 2 {
+		t.Fatalf("sources = %d, want exactly 2 distinct rows after duplicate collapse", len(got.Sources))
+	}
+	paths := map[string]bool{}
+	for _, s := range got.Sources {
+		paths[s.Path] = true
+		if s.StartLine != nil || s.EndLine != nil {
+			t.Errorf("migrated source %q should be path-only", s.Path)
+		}
+		wantID := learningID + "/" + s.Path
+		if s.ID != wantID {
+			t.Errorf("source id = %q, want deterministic %q", s.ID, wantID)
+		}
+	}
+	if len(paths) != 2 || !paths["internal/db/learnings.go"] || !paths["cmd/prog/main.go"] {
+		t.Errorf("sources = %v, want both distinct legacy paths", got.Sources)
+	}
+	if len(got.Files) != 2 {
+		t.Errorf("derived files count = %d, want 2", len(got.Files))
+	}
+
+	if err := db.DeleteItem(task.ID); err != nil {
+		t.Fatalf("failed to delete task after v6 migration: %v", err)
+	}
+	got, err = db.GetLearning(learningID)
+	if err != nil {
+		t.Fatalf("learning lost with task: %v", err)
+	}
+	if got.TaskID != nil {
+		t.Errorf("taskID = %v, want nil after task deletion", *got.TaskID)
+	}
+	if len(got.Sources) != 2 {
+		t.Errorf("sources after task delete = %d, want 2", len(got.Sources))
 	}
 }
 
