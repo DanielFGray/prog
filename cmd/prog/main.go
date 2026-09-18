@@ -165,6 +165,9 @@ Examples:
 		if flagProject == "" {
 			return fmt.Errorf("project is required (-p)")
 		}
+		if err := validateProjectName(flagProject); err != nil {
+			return err
+		}
 
 		database, err := openDB()
 		if err != nil {
@@ -1154,6 +1157,10 @@ Example:
   # ts-a1b2c3 is now in myproject`,
 	Args: cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := validateProjectName(args[1]); err != nil {
+			return err
+		}
+
 		database, err := openDB()
 		if err != nil {
 			return err
@@ -2463,6 +2470,10 @@ Examples:
 }
 
 func init() {
+	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
+		return rejectDuplicateProjectFlags(os.Args[1:])
+	}
+
 	// Global flags
 	rootCmd.PersistentFlags().StringVarP(&flagProject, "project", "p", "", "Project scope for task and label commands")
 
