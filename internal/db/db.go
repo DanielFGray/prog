@@ -15,7 +15,7 @@ import (
 
 // SchemaVersion is the current schema version.
 // Increment this when adding new migrations.
-const SchemaVersion = 6
+const SchemaVersion = 7
 
 // baseSchema is the original schema (version 1).
 // New tables should be added via migrations, not here.
@@ -326,6 +326,21 @@ JOIN json_each(
 WHERE typeof(j.value) = 'text' AND trim(j.value) != '';
 
 ALTER TABLE learnings DROP COLUMN files;
+`,
+	// Version 7: Typed learning-to-learning supersession edges. source_id is the
+	// replacement, target_id is the learning it replaces. Only kind=supersedes
+	// is allowed. Self-links are rejected; uniqueness is per (source, target,
+	// kind). Edges cascade when either learning is deleted.
+	`
+CREATE TABLE learning_relations (
+	source_id TEXT NOT NULL REFERENCES learnings(id) ON DELETE CASCADE,
+	target_id TEXT NOT NULL REFERENCES learnings(id) ON DELETE CASCADE,
+	kind TEXT NOT NULL CHECK (kind = 'supersedes'),
+	CHECK (source_id != target_id),
+	PRIMARY KEY (source_id, target_id, kind)
+);
+
+CREATE INDEX idx_learning_relations_target ON learning_relations(target_id);
 `,
 }
 

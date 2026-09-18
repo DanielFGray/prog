@@ -204,6 +204,117 @@ func (db *DB) attachLearningEvidence(l *model.Learning) error {
 	}
 	l.Sources = sources
 	deriveLearningFiles(l)
+
+	relations, err := db.loadLearningRelations(l.ID)
+	if err != nil {
+		return err
+	}
+	l.Relations = relations
+	return nil
+}
+
+func (db *DB) loadLearningRelations(learningID string) ([]model.LearningRelation, error) {
+	rows, err := db.Query(`
+		SELECT source_id, target_id, kind
+		FROM learning_relations
+		WHERE source_id = ? OR target_id = ?
+		ORDER BY kind, source_id, target_id
+	`, learningID, learningID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get learning relations: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	relations := []model.LearningRelation{}
+	for rows.Next() {
+		var r model.LearningRelation
+		if err := rows.Scan(&r.SourceID, &r.TargetID, &r.Kind); err != nil {
+			return nil, fmt.Errorf("failed to scan learning relation: %w", err)
+		}
+		relations = append(relations, r)
+	}
+	return relations, nil
+}
+
+// SupersedeLearning records that replacementID supersedes replacedID and marks
+// replacedID stale in one transaction. replacementID is the relation source;
+// replacedID is the target. Rejects missing IDs, self-links, cycles, duplicate
+// edges, and replacements that are already stale or archived.
+func (db *DB) SupersedeLearning(replacementID, replacedID string) error {
+	if replacementID == replacedID {
+		return fmt.Errorf("cannot supersede a learning with itself: %s", replacementID)
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var replacementStatus model.LearningStatus
+	err = tx.QueryRow(`SELECT status FROM learnings WHERE id = ?`, replacementID).Scan(&replacementStatus)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("replacement learning not found: %s", replacementID)
+		}
+		return fmt.Errorf("failed to load replacement learning: %w", err)
+	}
+
+	var replacedStatus model.LearningStatus
+	err = tx.QueryRow(`SELECT status FROM learnings WHERE id = ?`, replacedID).Scan(&replacedStatus)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("replaced learning not found: %s", replacedID)
+		}
+		return fmt.Errorf("failed to load replaced learning: %w", err)
+	}
+
+	if replacementStatus != model.LearningStatusActive {
+		return fmt.Errorf("replacement learning is %s, must be active: %s", replacementStatus, replacementID)
+	}
+
+	kind := model.LearningRelationKindSupersedes
+	var cycle int
+	err = tx.QueryRow(`
+		WITH RECURSIVE reachable(id) AS (
+			SELECT target_id FROM learning_relations
+			WHERE source_id = ? AND kind = ?
+			UNION
+			SELECT lr.target_id FROM learning_relations lr
+			JOIN reachable r ON lr.source_id = r.id
+			WHERE lr.kind = ?
+		)
+		SELECT COUNT(*) FROM reachable WHERE id = ?
+	`, replacedID, kind, kind, replacementID).Scan(&cycle)
+	if err != nil {
+		return fmt.Errorf("failed to check supersession cycle: %w", err)
+	}
+	if cycle > 0 {
+		return fmt.Errorf("supersession would create a cycle: %s → %s", replacementID, replacedID)
+	}
+
+	_, err = tx.Exec(`
+		INSERT INTO learning_relations (source_id, target_id, kind)
+		VALUES (?, ?, ?)
+	`, replacementID, replacedID, kind)
+	if err != nil {
+		if isUniqueConstraintError(err) {
+			return fmt.Errorf("supersession already exists: %s supersedes %s", replacementID, replacedID)
+		}
+		return fmt.Errorf("failed to insert supersession: %w", err)
+	}
+
+	now := time.Now()
+	_, err = tx.Exec(`
+		UPDATE learnings SET status = ?, updated_at = ? WHERE id = ?
+	`, model.LearningStatusStale, now, replacedID)
+	if err != nil {
+		return fmt.Errorf("failed to mark replaced learning stale: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit supersession: %w", err)
+	}
 	return nil
 }
 

@@ -134,6 +134,20 @@ type LearningSource struct {
 	Note      string
 }
 
+// LearningRelationKind is the typed edge between two learnings.
+// Only supersedes is supported; no generic graph kinds.
+type LearningRelationKind string
+
+const LearningRelationKindSupersedes LearningRelationKind = "supersedes"
+
+// LearningRelation is a directed learning-to-learning edge.
+// For kind supersedes: SourceID is the replacement, TargetID is the learning it replaces.
+type LearningRelation struct {
+	SourceID string
+	TargetID string
+	Kind     LearningRelationKind
+}
+
 // Learning represents a piece of knowledge discovered during work.
 type Learning struct {
 	ID        string // lrn-XXXXXX
@@ -146,6 +160,8 @@ type Learning struct {
 	Files     []string // Derived from Sources paths for non-DB callers
 	Status    LearningStatus
 	Concepts  []string // Associated concept names
+	// Relations are edges where this learning is source or target.
+	Relations []LearningRelation
 }
 
 // GenerateLearningID returns a new learning ID with lrn- prefix and 6 hex chars.

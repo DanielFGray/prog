@@ -1916,6 +1916,250 @@ func mustCreateLearning(t *testing.T, db *DB, l *model.Learning) {
 	}
 }
 
+func newTestLearning(summary string) *model.Learning {
+	now := time.Now()
+	return &model.Learning{
+		ID:        model.GenerateLearningID(),
+		CreatedAt: now,
+		UpdatedAt: now,
+		Summary:   summary,
+		Detail:    "detail for " + summary,
+		Status:    model.LearningStatusActive,
+		Concepts:  []string{"supersession"},
+	}
+}
+
+func relationCount(t *testing.T, db *DB) int {
+	t.Helper()
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM learning_relations`).Scan(&n); err != nil {
+		t.Fatalf("count learning_relations: %v", err)
+	}
+	return n
+}
+
+func TestSupersedeLearning(t *testing.T) {
+	db := setupTestDB(t)
+	old := newTestLearning("old fact")
+	neu := newTestLearning("corrected fact")
+	mustCreateLearning(t, db, old)
+	mustCreateLearning(t, db, neu)
+
+	if err := db.SupersedeLearning(neu.ID, old.ID); err != nil {
+		t.Fatalf("SupersedeLearning: %v", err)
+	}
+
+	gotOld, err := db.GetLearning(old.ID)
+	if err != nil {
+		t.Fatalf("get old: %v", err)
+	}
+	if gotOld.Status != model.LearningStatusStale {
+		t.Errorf("old status = %q, want stale", gotOld.Status)
+	}
+	if len(gotOld.Relations) != 1 {
+		t.Fatalf("old relations = %d, want 1", len(gotOld.Relations))
+	}
+	rel := gotOld.Relations[0]
+	if rel.SourceID != neu.ID || rel.TargetID != old.ID || rel.Kind != model.LearningRelationKindSupersedes {
+		t.Errorf("old relation = %+v, want source=%s target=%s kind=supersedes", rel, neu.ID, old.ID)
+	}
+
+	gotNew, err := db.GetLearning(neu.ID)
+	if err != nil {
+		t.Fatalf("get new: %v", err)
+	}
+	if gotNew.Status != model.LearningStatusActive {
+		t.Errorf("new status = %q, want active", gotNew.Status)
+	}
+	if len(gotNew.Relations) != 1 {
+		t.Fatalf("new relations = %d, want 1", len(gotNew.Relations))
+	}
+	if gotNew.Relations[0] != rel {
+		t.Errorf("new relation = %+v, want %+v", gotNew.Relations[0], rel)
+	}
+	if relationCount(t, db) != 1 {
+		t.Errorf("relation rows = %d, want 1", relationCount(t, db))
+	}
+}
+
+func TestSupersedeLearning_MissingIDsRollback(t *testing.T) {
+	db := setupTestDB(t)
+	active := newTestLearning("still active")
+	mustCreateLearning(t, db, active)
+
+	if err := db.SupersedeLearning("lrn-missing", active.ID); err == nil {
+		t.Fatal("expected error for missing replacement")
+	}
+	if err := db.SupersedeLearning(active.ID, "lrn-missing"); err == nil {
+		t.Fatal("expected error for missing replaced")
+	}
+
+	got, err := db.GetLearning(active.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Status != model.LearningStatusActive {
+		t.Errorf("status = %q, want active after failed supersession", got.Status)
+	}
+	if len(got.Relations) != 0 {
+		t.Errorf("relations = %v, want none after rollback", got.Relations)
+	}
+	if relationCount(t, db) != 0 {
+		t.Errorf("relation rows = %d, want 0 after rollback", relationCount(t, db))
+	}
+}
+
+func TestSupersedeLearning_SelfLinkRejected(t *testing.T) {
+	db := setupTestDB(t)
+	l := newTestLearning("self")
+	mustCreateLearning(t, db, l)
+
+	if err := db.SupersedeLearning(l.ID, l.ID); err == nil {
+		t.Fatal("expected self-supersession error")
+	}
+	got, err := db.GetLearning(l.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Status != model.LearningStatusActive {
+		t.Errorf("status = %q, want active", got.Status)
+	}
+	if relationCount(t, db) != 0 {
+		t.Errorf("relation rows = %d, want 0", relationCount(t, db))
+	}
+}
+
+func TestSupersedeLearning_DuplicateRejected(t *testing.T) {
+	db := setupTestDB(t)
+	old := newTestLearning("old")
+	neu := newTestLearning("new")
+	mustCreateLearning(t, db, old)
+	mustCreateLearning(t, db, neu)
+
+	if err := db.SupersedeLearning(neu.ID, old.ID); err != nil {
+		t.Fatalf("first supersession: %v", err)
+	}
+	if err := db.SupersedeLearning(neu.ID, old.ID); err == nil {
+		t.Fatal("expected duplicate supersession error")
+	}
+	if relationCount(t, db) != 1 {
+		t.Errorf("relation rows = %d, want 1 after duplicate rejection", relationCount(t, db))
+	}
+}
+
+func TestSupersedeLearning_CycleRejected(t *testing.T) {
+	db := setupTestDB(t)
+	a := newTestLearning("a")
+	b := newTestLearning("b")
+	c := newTestLearning("c")
+	mustCreateLearning(t, db, a)
+	mustCreateLearning(t, db, b)
+	mustCreateLearning(t, db, c)
+
+	if err := db.SupersedeLearning(a.ID, b.ID); err != nil {
+		t.Fatalf("a supersedes b: %v", err)
+	}
+	// Supersession stales the target; reactivate so the reverse edge is
+	// rejected for cyclicity rather than inactive replacement.
+	if err := db.UpdateLearningStatus(b.ID, model.LearningStatusActive); err != nil {
+		t.Fatalf("reactivate b: %v", err)
+	}
+	if err := db.SupersedeLearning(b.ID, a.ID); err == nil {
+		t.Fatal("expected direct cycle rejection")
+	}
+	if got, _ := db.GetLearning(a.ID); got.Status != model.LearningStatusActive {
+		t.Errorf("a status = %q after rejected cycle, want active", got.Status)
+	}
+	if relationCount(t, db) != 1 {
+		t.Errorf("relation rows = %d after direct cycle reject, want 1", relationCount(t, db))
+	}
+
+	if err := db.SupersedeLearning(b.ID, c.ID); err != nil {
+		t.Fatalf("b supersedes c: %v", err)
+	}
+	if err := db.UpdateLearningStatus(c.ID, model.LearningStatusActive); err != nil {
+		t.Fatalf("reactivate c: %v", err)
+	}
+	// Edges a→b→c; c→a would close a cycle.
+	if err := db.SupersedeLearning(c.ID, a.ID); err == nil {
+		t.Fatal("expected transitive cycle rejection")
+	}
+	if relationCount(t, db) != 2 {
+		t.Errorf("relation rows = %d after transitive cycle reject, want 2", relationCount(t, db))
+	}
+	if got, _ := db.GetLearning(a.ID); got.Status != model.LearningStatusActive {
+		t.Errorf("a status = %q after transitive cycle reject, want active", got.Status)
+	}
+}
+
+func TestSupersedeLearning_RejectsStaleOrArchivedReplacement(t *testing.T) {
+	db := setupTestDB(t)
+	target := newTestLearning("target")
+	stale := newTestLearning("stale replacement")
+	archived := newTestLearning("archived replacement")
+	mustCreateLearning(t, db, target)
+	mustCreateLearning(t, db, stale)
+	mustCreateLearning(t, db, archived)
+
+	if err := db.UpdateLearningStatus(stale.ID, model.LearningStatusStale); err != nil {
+		t.Fatalf("mark stale: %v", err)
+	}
+	if err := db.UpdateLearningStatus(archived.ID, model.LearningStatusArchived); err != nil {
+		t.Fatalf("mark archived: %v", err)
+	}
+
+	if err := db.SupersedeLearning(stale.ID, target.ID); err == nil {
+		t.Fatal("expected rejection of stale replacement")
+	}
+	if err := db.SupersedeLearning(archived.ID, target.ID); err == nil {
+		t.Fatal("expected rejection of archived replacement")
+	}
+
+	got, err := db.GetLearning(target.ID)
+	if err != nil {
+		t.Fatalf("get target: %v", err)
+	}
+	if got.Status != model.LearningStatusActive {
+		t.Errorf("target status = %q, want active", got.Status)
+	}
+	if relationCount(t, db) != 0 {
+		t.Errorf("relation rows = %d, want 0", relationCount(t, db))
+	}
+}
+
+func TestSupersedeLearning_ReadsBothDirections(t *testing.T) {
+	db := setupTestDB(t)
+	old := newTestLearning("replaced")
+	neu := newTestLearning("replacement")
+	mustCreateLearning(t, db, old)
+	mustCreateLearning(t, db, neu)
+
+	if err := db.SupersedeLearning(neu.ID, old.ID); err != nil {
+		t.Fatalf("supersede: %v", err)
+	}
+
+	fromOld, err := db.GetLearning(old.ID)
+	if err != nil {
+		t.Fatalf("get old: %v", err)
+	}
+	fromNew, err := db.GetLearning(neu.ID)
+	if err != nil {
+		t.Fatalf("get new: %v", err)
+	}
+	if len(fromOld.Relations) != 1 || len(fromNew.Relations) != 1 {
+		t.Fatalf("relations old=%d new=%d, want 1 each", len(fromOld.Relations), len(fromNew.Relations))
+	}
+	if fromOld.Relations[0].SourceID != neu.ID || fromOld.Relations[0].TargetID != old.ID {
+		t.Errorf("old view relation = %+v", fromOld.Relations[0])
+	}
+	if fromNew.Relations[0].SourceID != neu.ID || fromNew.Relations[0].TargetID != old.ID {
+		t.Errorf("new view relation = %+v", fromNew.Relations[0])
+	}
+	if fromOld.Relations[0].Kind != model.LearningRelationKindSupersedes {
+		t.Errorf("kind = %q, want supersedes", fromOld.Relations[0].Kind)
+	}
+}
+
 func hitIDs(hits []model.KnowledgeHit) []string {
 	ids := make([]string, len(hits))
 	for i, h := range hits {

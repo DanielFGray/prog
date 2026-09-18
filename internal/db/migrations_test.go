@@ -526,6 +526,130 @@ func TestMigrateV6_NormalizesFileEvidence(t *testing.T) {
 	}
 }
 
+// setupV6DB builds a database frozen at schema version 6 (normalized
+// learning_sources, no learning_relations table yet).
+func setupV6DB(t *testing.T) *DB {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "v6.db")
+
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("failed to open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	if _, err := db.Exec(baseSchema); err != nil {
+		t.Fatalf("failed to create base schema: %v", err)
+	}
+	for i, m := range migrations[:5] {
+		if _, err := db.Exec(m); err != nil {
+			t.Fatalf("failed to apply migration to v%d: %v", i+2, err)
+		}
+	}
+	if err := db.setSchemaVersion(6); err != nil {
+		t.Fatalf("failed to set schema version: %v", err)
+	}
+	return db
+}
+
+// TestMigrateV7_CreatesLearningRelations covers the v7 upgrade: learning_relations
+// appears with source/target FKs, kind check, self-link rejection, and uniqueness.
+func TestMigrateV7_CreatesLearningRelations(t *testing.T) {
+	db := setupV6DB(t)
+
+	var existsBefore int
+	if err := db.QueryRow(`
+		SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='learning_relations'
+	`).Scan(&existsBefore); err != nil {
+		t.Fatalf("check table before migrate: %v", err)
+	}
+	if existsBefore != 0 {
+		t.Fatalf("learning_relations unexpectedly present before v7")
+	}
+
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("migration to v7 failed: %v", err)
+	}
+
+	version, err := db.getSchemaVersion()
+	if err != nil {
+		t.Fatalf("failed to read schema version: %v", err)
+	}
+	if version != SchemaVersion {
+		t.Errorf("schema version = %d, want %d", version, SchemaVersion)
+	}
+
+	var existsAfter int
+	if err := db.QueryRow(`
+		SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='learning_relations'
+	`).Scan(&existsAfter); err != nil {
+		t.Fatalf("check table after migrate: %v", err)
+	}
+	if existsAfter != 1 {
+		t.Fatalf("learning_relations missing after v7 migration")
+	}
+
+	cols := tableColumns(t, db, "learning_relations")
+	for _, want := range []string{"source_id", "target_id", "kind"} {
+		if !hasColumn(cols, want) {
+			t.Errorf("learning_relations missing column %q (got %v)", want, cols)
+		}
+	}
+
+	old := &model.Learning{
+		ID:        model.GenerateLearningID(),
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		Summary:   "pre-v7 old",
+		Status:    model.LearningStatusActive,
+	}
+	neu := &model.Learning{
+		ID:        model.GenerateLearningID(),
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		Summary:   "pre-v7 new",
+		Status:    model.LearningStatusActive,
+	}
+	mustCreateLearning(t, db, old)
+	mustCreateLearning(t, db, neu)
+
+	if err := db.SupersedeLearning(neu.ID, old.ID); err != nil {
+		t.Fatalf("supersede after v7 migrate: %v", err)
+	}
+
+	// Self-link rejected by CHECK constraint at the SQL layer.
+	if _, err := db.Exec(`
+		INSERT INTO learning_relations (source_id, target_id, kind)
+		VALUES (?, ?, 'supersedes')
+	`, neu.ID, neu.ID); err == nil {
+		t.Fatal("expected self-link CHECK to reject insert")
+	}
+
+	// Uniqueness on (source, target, kind).
+	if _, err := db.Exec(`
+		INSERT INTO learning_relations (source_id, target_id, kind)
+		VALUES (?, ?, 'supersedes')
+	`, neu.ID, old.ID); err == nil {
+		t.Fatal("expected unique constraint to reject duplicate edge")
+	}
+
+	// Only supersedes kind is allowed.
+	other := &model.Learning{
+		ID:        model.GenerateLearningID(),
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		Summary:   "other",
+		Status:    model.LearningStatusActive,
+	}
+	mustCreateLearning(t, db, other)
+	if _, err := db.Exec(`
+		INSERT INTO learning_relations (source_id, target_id, kind)
+		VALUES (?, ?, 'supports')
+	`, neu.ID, other.ID); err == nil {
+		t.Fatal("expected kind CHECK to reject non-supersedes")
+	}
+}
+
 func TestMigrateRollsBackFailedMigration(t *testing.T) {
 	db := setupTestDB(t)
 	original := migrations
