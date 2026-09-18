@@ -3,8 +3,10 @@ package db
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/baiirun/prog/internal/model"
 )
@@ -419,6 +421,321 @@ func (db *DB) SearchLearnings(query string, includeStale bool) ([]model.Learning
 	}
 
 	return learnings, nil
+}
+
+// searchKnowledgeWeights are internal ranking weights only. Callers see MatchReason
+// signals, never an aggregate score.
+var searchKnowledgeWeights = map[string]int{
+	model.MatchExactSummary:    8,
+	model.MatchFTSSummary:      4,
+	model.MatchConceptName:     4,
+	model.MatchConceptSummary:  3,
+	model.MatchTaskTitle:       3,
+	model.MatchTaskDescription: 2,
+	model.MatchFTSDetail:       2,
+	model.MatchFilePath:        2,
+}
+
+// SearchKnowledge ranks active learnings using text, concepts, task title and
+// description, and existing file references. Every hit reports why it matched.
+// Stale learnings are excluded unless q.IncludeStale is set. Ordering is
+// deterministic: higher internal signal weight first, then learning ID ascending.
+func (db *DB) SearchKnowledge(q model.KnowledgeQuery) ([]model.KnowledgeHit, error) {
+	text := strings.TrimSpace(q.Text)
+	var taskTitle, taskDesc string
+	if q.TaskID != "" {
+		item, err := db.GetItem(q.TaskID)
+		if err != nil {
+			return nil, err
+		}
+		taskTitle = strings.TrimSpace(item.Title)
+		taskDesc = strings.TrimSpace(item.Description)
+	}
+	requestedConcepts := knowledgeNormalizeConceptList(q.Concepts)
+	if text == "" && taskTitle == "" && taskDesc == "" && len(requestedConcepts) == 0 {
+		return nil, nil
+	}
+
+	learnings, err := db.GetAllLearnings(q.IncludeStale)
+	if err != nil {
+		return nil, err
+	}
+	concepts, err := db.ListConcepts(false)
+	if err != nil {
+		return nil, err
+	}
+	conceptByName := make(map[string]model.Concept, len(concepts))
+	for _, c := range concepts {
+		conceptByName[c.Name] = c
+	}
+
+	ftsTextIDs, err := db.knowledgeFTSIDs(text, q.IncludeStale)
+	if err != nil {
+		return nil, err
+	}
+
+	textTokens := knowledgeTokenize(text)
+	titleTokens := knowledgeTokenize(taskTitle)
+	descTokens := knowledgeTokenize(taskDesc)
+	contextTokens := append(append(append([]string{}, textTokens...), titleTokens...), descTokens...)
+	titleMeaningful := knowledgeMeaningfulTokens(titleTokens)
+	descMeaningful := knowledgeMeaningfulTokens(descTokens)
+	textLower := strings.ToLower(text)
+
+	type scored struct {
+		hit   model.KnowledgeHit
+		score int
+	}
+	var ranked []scored
+
+	for _, l := range learnings {
+		var reasons []model.MatchReason
+		seen := map[string]bool{}
+		add := func(signal, detail string) {
+			key := signal + "\x00" + detail
+			if seen[key] {
+				return
+			}
+			seen[key] = true
+			reasons = append(reasons, model.MatchReason{Signal: signal, Detail: detail})
+		}
+
+		summaryTokens := knowledgeTokenize(l.Summary)
+		detailTokens := knowledgeTokenize(l.Detail)
+		learningTextTokens := append(append([]string{}, summaryTokens...), detailTokens...)
+		learningConceptTokens := make([]string, 0, len(l.Concepts))
+		for _, name := range l.Concepts {
+			learningConceptTokens = append(learningConceptTokens, knowledgeTokenize(name)...)
+		}
+		learningMatchTokens := append(append([]string{}, learningTextTokens...), learningConceptTokens...)
+
+		if text != "" && strings.Contains(strings.ToLower(l.Summary), textLower) {
+			add(model.MatchExactSummary, text)
+		}
+
+		if ftsTextIDs[l.ID] {
+			if len(knowledgeWholeTokenOverlap(summaryTokens, textTokens)) > 0 {
+				add(model.MatchFTSSummary, text)
+			}
+			if len(knowledgeWholeTokenOverlap(detailTokens, textTokens)) > 0 {
+				add(model.MatchFTSDetail, text)
+			}
+		}
+
+		for _, name := range l.Concepts {
+			if knowledgeRequestedConcept(requestedConcepts, name) {
+				add(model.MatchConceptName, name)
+			} else if knowledgeConceptNameInTokens(name, contextTokens) {
+				add(model.MatchConceptName, name)
+			}
+			c := conceptByName[name]
+			if c.Summary != "" && text != "" {
+				sumTokens := knowledgeTokenize(c.Summary)
+				if strings.Contains(strings.ToLower(c.Summary), textLower) ||
+					len(knowledgeWholeTokenOverlap(sumTokens, textTokens)) > 0 {
+					add(model.MatchConceptSummary, name)
+				}
+			}
+		}
+
+		if len(titleMeaningful) > 0 {
+			if matched := knowledgeWholeTokenOverlap(learningMatchTokens, titleMeaningful); len(matched) > 0 {
+				add(model.MatchTaskTitle, strings.Join(matched, " "))
+			}
+		}
+		if len(descMeaningful) > 0 {
+			if matched := knowledgeWholeTokenOverlap(learningMatchTokens, descMeaningful); len(matched) > 0 {
+				add(model.MatchTaskDescription, strings.Join(matched, " "))
+			}
+		}
+
+		contextLower := strings.ToLower(strings.Join([]string{text, taskTitle, taskDesc}, " "))
+		for _, file := range l.Files {
+			fileLower := strings.ToLower(file)
+			if fileLower == "" {
+				continue
+			}
+			if (text != "" && (strings.Contains(textLower, fileLower) || strings.Contains(fileLower, textLower))) ||
+				(taskTitle != "" && strings.Contains(strings.ToLower(taskTitle), fileLower)) ||
+				(taskDesc != "" && strings.Contains(strings.ToLower(taskDesc), fileLower)) ||
+				(contextLower != "" && strings.Contains(contextLower, fileLower)) {
+				add(model.MatchFilePath, file)
+			}
+		}
+
+		if len(reasons) == 0 {
+			continue
+		}
+
+		score := 0
+		for _, r := range reasons {
+			score += searchKnowledgeWeights[r.Signal]
+		}
+		ranked = append(ranked, scored{
+			hit:   model.KnowledgeHit{Learning: l, Reasons: reasons},
+			score: score,
+		})
+	}
+
+	sort.SliceStable(ranked, func(i, j int) bool {
+		if ranked[i].score != ranked[j].score {
+			return ranked[i].score > ranked[j].score
+		}
+		return ranked[i].hit.Learning.ID < ranked[j].hit.Learning.ID
+	})
+
+	hits := make([]model.KnowledgeHit, len(ranked))
+	for i := range ranked {
+		hits[i] = ranked[i].hit
+	}
+	return hits, nil
+}
+
+func (db *DB) knowledgeFTSIDs(query string, includeStale bool) (map[string]bool, error) {
+	ids := map[string]bool{}
+	ftsQuery := knowledgeFTSQuery(query)
+	if ftsQuery == "" {
+		return ids, nil
+	}
+	found, err := db.SearchLearnings(ftsQuery, includeStale)
+	if err != nil {
+		return nil, err
+	}
+	for _, l := range found {
+		ids[l.ID] = true
+	}
+	return ids, nil
+}
+
+// knowledgeFTSQuery builds a safe FTS5 MATCH expression from alphanumeric tokens.
+func knowledgeFTSQuery(s string) string {
+	tokens := knowledgeTokenize(s)
+	if len(tokens) == 0 {
+		return ""
+	}
+	parts := make([]string, len(tokens))
+	for i, tok := range tokens {
+		parts[i] = `"` + tok + `"`
+	}
+	return strings.Join(parts, " ")
+}
+
+// knowledgeBoilerplate are generic task/prose terms excluded from task-context overlap.
+var knowledgeBoilerplate = map[string]bool{
+	"a": true, "an": true, "the": true, "and": true, "or": true, "of": true,
+	"to": true, "in": true, "on": true, "for": true, "with": true, "from": true,
+	"by": true, "at": true, "as": true, "is": true, "be": true, "are": true,
+	"was": true, "were": true, "this": true, "that": true, "it": true, "its": true,
+	"into": true, "via": true, "about": true, "around": true, "over": true,
+	"fix": true, "fixes": true, "fixed": true, "fixing": true,
+	"bug": true, "bugs": true, "issue": true, "issues": true, "task": true,
+	"add": true, "update": true, "change": true, "make": true, "implement": true,
+	"investigate": true, "improve": true, "rework": true, "review": true,
+	"must": true, "should": true, "need": true, "needs": true, "see": true,
+	"use": true, "using": true, "when": true, "how": true, "what": true,
+	"why": true, "do": true, "does": true, "not": true, "no": true, "yes": true,
+	"all": true, "any": true, "some": true, "new": true, "old": true,
+}
+
+func knowledgeTokenize(s string) []string {
+	fields := strings.FieldsFunc(strings.ToLower(s), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsNumber(r)
+	})
+	var out []string
+	for _, f := range fields {
+		if len(f) < 2 {
+			continue
+		}
+		out = append(out, f)
+	}
+	return out
+}
+
+func knowledgeMeaningfulTokens(tokens []string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, tok := range tokens {
+		if knowledgeBoilerplate[tok] || seen[tok] {
+			continue
+		}
+		seen[tok] = true
+		out = append(out, tok)
+	}
+	return out
+}
+
+func knowledgeTokenSet(tokens []string) map[string]bool {
+	set := make(map[string]bool, len(tokens))
+	for _, tok := range tokens {
+		set[tok] = true
+	}
+	return set
+}
+
+// knowledgeWholeTokenOverlap returns needle tokens that appear as whole tokens in
+// haystack, preserving needle order and dropping duplicates.
+func knowledgeWholeTokenOverlap(haystack, needles []string) []string {
+	set := knowledgeTokenSet(haystack)
+	var out []string
+	seen := map[string]bool{}
+	for _, n := range needles {
+		if !set[n] || seen[n] {
+			continue
+		}
+		seen[n] = true
+		out = append(out, n)
+	}
+	return out
+}
+
+func knowledgeConceptNameInTokens(conceptName string, contextTokens []string) bool {
+	conceptToks := knowledgeTokenize(conceptName)
+	if len(conceptToks) == 0 {
+		return false
+	}
+	if len(conceptToks) == 1 {
+		return knowledgeTokenSet(contextTokens)[conceptToks[0]]
+	}
+	for i := 0; i+len(conceptToks) <= len(contextTokens); i++ {
+		match := true
+		for j := range conceptToks {
+			if contextTokens[i+j] != conceptToks[j] {
+				match = false
+				break
+			}
+		}
+		if match {
+			return true
+		}
+	}
+	return false
+}
+
+func knowledgeNormalizeConceptList(names []string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		key := strings.ToLower(name)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, name)
+	}
+	return out
+}
+
+func knowledgeRequestedConcept(requested []string, learningConcept string) bool {
+	for _, req := range requested {
+		if strings.EqualFold(req, learningConcept) {
+			return true
+		}
+	}
+	return false
 }
 
 // ConceptStats holds statistics for a concept.

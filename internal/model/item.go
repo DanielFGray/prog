@@ -143,6 +143,42 @@ func GenerateLearningID() string {
 	return "lrn-" + hex.EncodeToString(b)
 }
 
+// Match signal identifiers for KnowledgeHit reasons. Stable user-facing contract:
+// reasons name the signal that fired; they do not expose an aggregate score.
+const (
+	MatchExactSummary    = "exact_summary"
+	MatchFTSSummary      = "fts_summary"
+	MatchFTSDetail       = "fts_detail"
+	MatchConceptName     = "concept_name"
+	MatchConceptSummary  = "concept_summary"
+	MatchTaskTitle       = "task_title"
+	MatchTaskDescription = "task_description"
+	MatchFilePath        = "file_path"
+)
+
+// KnowledgeQuery is the input to ranked knowledge retrieval.
+// Text drives FTS, exact-summary, discovered-concept, and file-path signals.
+// Concepts selects learnings by tag without requiring those names in Text or task prose.
+// TaskID, when set, loads that item's title and description as task-context signals.
+type KnowledgeQuery struct {
+	Text         string
+	TaskID       string
+	Concepts     []string
+	IncludeStale bool
+}
+
+// MatchReason identifies one retrieval signal that contributed to a hit.
+type MatchReason struct {
+	Signal string // one of the Match* constants
+	Detail string // specific matched value (concept name, file path, phrase, …)
+}
+
+// KnowledgeHit is a ranked learning with explicit match reasons.
+type KnowledgeHit struct {
+	Learning Learning
+	Reasons  []MatchReason
+}
+
 // GenerateConceptID returns a new concept ID with con- prefix and 6 hex chars.
 func GenerateConceptID() string {
 	b := make([]byte, 3)

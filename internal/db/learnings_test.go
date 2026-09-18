@@ -1330,3 +1330,435 @@ func TestDeleteItem_DetachesChildren(t *testing.T) {
 		t.Errorf("child title = %q, want %q", got.Title, child.Title)
 	}
 }
+
+// --- Ranked knowledge retrieval ---
+
+func TestSearchKnowledge(t *testing.T) {
+	now := time.Now()
+
+	tests := []struct {
+		name string
+		seed func(t *testing.T, db *DB) model.KnowledgeQuery
+		want []struct {
+			id      string
+			reasons []model.MatchReason
+		}
+	}{
+		{
+			name: "exact summary",
+			seed: func(t *testing.T, db *DB) model.KnowledgeQuery {
+				mustCreateLearning(t, db, &model.Learning{
+					ID: "lrn-exact1", CreatedAt: now, UpdatedAt: now,
+					Summary: "Token refresh must be idempotent",
+					Detail:  "Unrelated body text",
+					Status:  model.LearningStatusActive,
+				})
+				mustCreateLearning(t, db, &model.Learning{
+					ID: "lrn-other1", CreatedAt: now, UpdatedAt: now,
+					Summary: "Connection pooling defaults",
+					Detail:  "No overlapping rare terms here",
+					Status:  model.LearningStatusActive,
+				})
+				return model.KnowledgeQuery{Text: "Token refresh must be idempotent"}
+			},
+			want: []struct {
+				id      string
+				reasons []model.MatchReason
+			}{
+				{
+					id: "lrn-exact1",
+					reasons: []model.MatchReason{
+						{Signal: model.MatchExactSummary, Detail: "Token refresh must be idempotent"},
+						{Signal: model.MatchFTSSummary, Detail: "Token refresh must be idempotent"},
+					},
+				},
+			},
+		},
+		{
+			name: "detail-only",
+			seed: func(t *testing.T, db *DB) model.KnowledgeQuery {
+				mustCreateLearning(t, db, &model.Learning{
+					ID: "lrn-detail1", CreatedAt: now, UpdatedAt: now,
+					Summary: "Pooling notes",
+					Detail:  "Xylophone quorum bloomfilter unique detail hit",
+					Status:  model.LearningStatusActive,
+				})
+				mustCreateLearning(t, db, &model.Learning{
+					ID: "lrn-nodetail", CreatedAt: now, UpdatedAt: now,
+					Summary: "Other summary without the rare terms",
+					Detail:  "Nothing special",
+					Status:  model.LearningStatusActive,
+				})
+				return model.KnowledgeQuery{Text: "xylophone quorum"}
+			},
+			want: []struct {
+				id      string
+				reasons []model.MatchReason
+			}{
+				{
+					id: "lrn-detail1",
+					reasons: []model.MatchReason{
+						{Signal: model.MatchFTSDetail, Detail: "xylophone quorum"},
+					},
+				},
+			},
+		},
+		{
+			name: "concept name",
+			seed: func(t *testing.T, db *DB) model.KnowledgeQuery {
+				mustCreateLearning(t, db, &model.Learning{
+					ID: "lrn-cname1", CreatedAt: now, UpdatedAt: now,
+					Summary:  "Remember the handshake order",
+					Status:   model.LearningStatusActive,
+					Concepts: []string{"authn"},
+				})
+				mustCreateLearning(t, db, &model.Learning{
+					ID: "lrn-cname0", CreatedAt: now, UpdatedAt: now,
+					Summary:  "Unrelated learning",
+					Status:   model.LearningStatusActive,
+					Concepts: []string{"database"},
+				})
+				return model.KnowledgeQuery{Text: "fixing authn tomorrow"}
+			},
+			want: []struct {
+				id      string
+				reasons []model.MatchReason
+			}{
+				{
+					id: "lrn-cname1",
+					reasons: []model.MatchReason{
+						{Signal: model.MatchConceptName, Detail: "authn"},
+					},
+				},
+			},
+		},
+		{
+			name: "concept summary",
+			seed: func(t *testing.T, db *DB) model.KnowledgeQuery {
+				mustCreateLearning(t, db, &model.Learning{
+					ID: "lrn-csum1", CreatedAt: now, UpdatedAt: now,
+					Summary:  "Use short-lived credentials",
+					Status:   model.LearningStatusActive,
+					Concepts: []string{"secrets"},
+				})
+				if err := db.SetConceptSummary("secrets", "Vault rotation and lease renewal"); err != nil {
+					t.Fatalf("set concept summary: %v", err)
+				}
+				mustCreateLearning(t, db, &model.Learning{
+					ID: "lrn-csum0", CreatedAt: now, UpdatedAt: now,
+					Summary:  "Unrelated",
+					Status:   model.LearningStatusActive,
+					Concepts: []string{"ui"},
+				})
+				return model.KnowledgeQuery{Text: "Vault rotation"}
+			},
+			want: []struct {
+				id      string
+				reasons []model.MatchReason
+			}{
+				{
+					id: "lrn-csum1",
+					reasons: []model.MatchReason{
+						{Signal: model.MatchConceptSummary, Detail: "secrets"},
+					},
+				},
+			},
+		},
+		{
+			name: "file path",
+			seed: func(t *testing.T, db *DB) model.KnowledgeQuery {
+				mustCreateLearning(t, db, &model.Learning{
+					ID: "lrn-file1", CreatedAt: now, UpdatedAt: now,
+					Summary: "Watcher semantics",
+					Status:  model.LearningStatusActive,
+					Files:   []string{"internal/db/learnings.go"},
+				})
+				mustCreateLearning(t, db, &model.Learning{
+					ID: "lrn-file0", CreatedAt: now, UpdatedAt: now,
+					Summary: "Other file learning",
+					Status:  model.LearningStatusActive,
+					Files:   []string{"cmd/prog/main.go"},
+				})
+				return model.KnowledgeQuery{Text: "see internal/db/learnings.go for FTS"}
+			},
+			want: []struct {
+				id      string
+				reasons []model.MatchReason
+			}{
+				{
+					id: "lrn-file1",
+					reasons: []model.MatchReason{
+						{Signal: model.MatchFilePath, Detail: "internal/db/learnings.go"},
+					},
+				},
+			},
+		},
+		{
+			name: "task context",
+			seed: func(t *testing.T, db *DB) model.KnowledgeQuery {
+				task := &model.Item{
+					ID:          "ts-know01",
+					Project:     "test",
+					Type:        model.ItemTypeTask,
+					Title:       "Fix authn handshake",
+					Description: "Investigate concurrency around batching",
+					Status:      model.StatusOpen,
+					CreatedAt:   now,
+					UpdatedAt:   now,
+				}
+				if err := db.CreateItem(task); err != nil {
+					t.Fatalf("create task: %v", err)
+				}
+				mustCreateLearning(t, db, &model.Learning{
+					ID: "lrn-task1", CreatedAt: now, UpdatedAt: now,
+					Summary:  "Remember the handshake order",
+					Status:   model.LearningStatusActive,
+					Concepts: []string{"authn"},
+				})
+				mustCreateLearning(t, db, &model.Learning{
+					ID: "lrn-task2", CreatedAt: now, UpdatedAt: now,
+					Summary:  "Worker pool sizing",
+					Detail:   "Tune concurrency for batch jobs",
+					Status:   model.LearningStatusActive,
+					Concepts: []string{"workers"},
+				})
+				mustCreateLearning(t, db, &model.Learning{
+					ID: "lrn-task0", CreatedAt: now, UpdatedAt: now,
+					Summary:  "Unrelated CSS layout",
+					Status:   model.LearningStatusActive,
+					Concepts: []string{"ui"},
+				})
+				return model.KnowledgeQuery{TaskID: task.ID}
+			},
+			want: []struct {
+				id      string
+				reasons []model.MatchReason
+			}{
+				{
+					id: "lrn-task1",
+					reasons: []model.MatchReason{
+						{Signal: model.MatchConceptName, Detail: "authn"},
+						{Signal: model.MatchTaskTitle, Detail: "authn handshake"},
+					},
+				},
+				{
+					id: "lrn-task2",
+					reasons: []model.MatchReason{
+						{Signal: model.MatchTaskDescription, Detail: "concurrency"},
+					},
+				},
+			},
+		},
+		{
+			name: "concept-only query",
+			seed: func(t *testing.T, db *DB) model.KnowledgeQuery {
+				mustCreateLearning(t, db, &model.Learning{
+					ID: "lrn-conly1", CreatedAt: now, UpdatedAt: now,
+					Summary:  "Tagged authn note",
+					Status:   model.LearningStatusActive,
+					Concepts: []string{"authn"},
+				})
+				mustCreateLearning(t, db, &model.Learning{
+					ID: "lrn-conly2", CreatedAt: now, UpdatedAt: now,
+					Summary:  "Also authn and database",
+					Status:   model.LearningStatusActive,
+					Concepts: []string{"authn", "database"},
+				})
+				mustCreateLearning(t, db, &model.Learning{
+					ID: "lrn-conly0", CreatedAt: now, UpdatedAt: now,
+					Summary:  "Other concept only",
+					Status:   model.LearningStatusActive,
+					Concepts: []string{"database"},
+				})
+				return model.KnowledgeQuery{Concepts: []string{"authn"}}
+			},
+			want: []struct {
+				id      string
+				reasons []model.MatchReason
+			}{
+				{
+					id: "lrn-conly1",
+					reasons: []model.MatchReason{
+						{Signal: model.MatchConceptName, Detail: "authn"},
+					},
+				},
+				{
+					id: "lrn-conly2",
+					reasons: []model.MatchReason{
+						{Signal: model.MatchConceptName, Detail: "authn"},
+					},
+				},
+			},
+		},
+		{
+			name: "ui does not match build",
+			seed: func(t *testing.T, db *DB) model.KnowledgeQuery {
+				mustCreateLearning(t, db, &model.Learning{
+					ID: "lrn-ui1", CreatedAt: now, UpdatedAt: now,
+					Summary:  "Layout spacing rules",
+					Status:   model.LearningStatusActive,
+					Concepts: []string{"ui"},
+				})
+				return model.KnowledgeQuery{Text: "build the dashboard"}
+			},
+			want: nil,
+		},
+		{
+			name: "generic task words do not match unrelated",
+			seed: func(t *testing.T, db *DB) model.KnowledgeQuery {
+				task := &model.Item{
+					ID:          "ts-know02",
+					Project:     "test",
+					Type:        model.ItemTypeTask,
+					Title:       "Fix the bug",
+					Description: "Investigate the issue",
+					Status:      model.StatusOpen,
+					CreatedAt:   now,
+					UpdatedAt:   now,
+				}
+				if err := db.CreateItem(task); err != nil {
+					t.Fatalf("create task: %v", err)
+				}
+				mustCreateLearning(t, db, &model.Learning{
+					ID: "lrn-generic0", CreatedAt: now, UpdatedAt: now,
+					Summary:  "Unrelated CSS layout",
+					Status:   model.LearningStatusActive,
+					Concepts: []string{"ui"},
+				})
+				return model.KnowledgeQuery{TaskID: task.ID}
+			},
+			want: nil,
+		},
+		{
+			name: "stale exclusion",
+			seed: func(t *testing.T, db *DB) model.KnowledgeQuery {
+				mustCreateLearning(t, db, &model.Learning{
+					ID: "lrn-stale1", CreatedAt: now, UpdatedAt: now,
+					Summary: "Stale zebra protocol tip",
+					Status:  model.LearningStatusStale,
+				})
+				mustCreateLearning(t, db, &model.Learning{
+					ID: "lrn-active1", CreatedAt: now, UpdatedAt: now,
+					Summary: "Active zebra protocol tip",
+					Status:  model.LearningStatusActive,
+				})
+				return model.KnowledgeQuery{Text: "zebra protocol"}
+			},
+			want: []struct {
+				id      string
+				reasons []model.MatchReason
+			}{
+				{
+					id: "lrn-active1",
+					reasons: []model.MatchReason{
+						{Signal: model.MatchExactSummary, Detail: "zebra protocol"},
+						{Signal: model.MatchFTSSummary, Detail: "zebra protocol"},
+					},
+				},
+			},
+		},
+		{
+			name: "no result",
+			seed: func(t *testing.T, db *DB) model.KnowledgeQuery {
+				mustCreateLearning(t, db, &model.Learning{
+					ID: "lrn-none1", CreatedAt: now, UpdatedAt: now,
+					Summary: "Completely different subject",
+					Status:  model.LearningStatusActive,
+				})
+				return model.KnowledgeQuery{Text: "zzznomatchqqq"}
+			},
+			want: nil,
+		},
+		{
+			name: "deterministic ordering",
+			seed: func(t *testing.T, db *DB) model.KnowledgeQuery {
+				// Same signal profile; IDs chosen so ascending ID order is lrn-aaa001 then lrn-bbb001.
+				mustCreateLearning(t, db, &model.Learning{
+					ID: "lrn-bbb001", CreatedAt: now, UpdatedAt: now,
+					Summary: "Sharedphrase alpha",
+					Status:  model.LearningStatusActive,
+				})
+				mustCreateLearning(t, db, &model.Learning{
+					ID: "lrn-aaa001", CreatedAt: now, UpdatedAt: now,
+					Summary: "Sharedphrase beta",
+					Status:  model.LearningStatusActive,
+				})
+				return model.KnowledgeQuery{Text: "Sharedphrase"}
+			},
+			want: []struct {
+				id      string
+				reasons []model.MatchReason
+			}{
+				{
+					id: "lrn-aaa001",
+					reasons: []model.MatchReason{
+						{Signal: model.MatchExactSummary, Detail: "Sharedphrase"},
+						{Signal: model.MatchFTSSummary, Detail: "Sharedphrase"},
+					},
+				},
+				{
+					id: "lrn-bbb001",
+					reasons: []model.MatchReason{
+						{Signal: model.MatchExactSummary, Detail: "Sharedphrase"},
+						{Signal: model.MatchFTSSummary, Detail: "Sharedphrase"},
+					},
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := setupTestDB(t)
+			q := tt.seed(t, db)
+			hits, err := db.SearchKnowledge(q)
+			if err != nil {
+				t.Fatalf("SearchKnowledge: %v", err)
+			}
+			if len(tt.want) == 0 {
+				if len(hits) != 0 {
+					t.Fatalf("hits = %d, want 0", len(hits))
+				}
+				return
+			}
+			if len(hits) != len(tt.want) {
+				t.Fatalf("hits = %d, want %d (%v)", len(hits), len(tt.want), hitIDs(hits))
+			}
+			for i, w := range tt.want {
+				if hits[i].Learning.ID != w.id {
+					t.Errorf("hits[%d].ID = %s, want %s (order %v)", i, hits[i].Learning.ID, w.id, hitIDs(hits))
+				}
+				if !sameReasons(hits[i].Reasons, w.reasons) {
+					t.Errorf("hits[%d].Reasons = %#v, want %#v", i, hits[i].Reasons, w.reasons)
+				}
+			}
+		})
+	}
+}
+
+func mustCreateLearning(t *testing.T, db *DB, l *model.Learning) {
+	t.Helper()
+	if err := db.CreateLearning(l); err != nil {
+		t.Fatalf("create learning %s: %v", l.ID, err)
+	}
+}
+
+func hitIDs(hits []model.KnowledgeHit) []string {
+	ids := make([]string, len(hits))
+	for i, h := range hits {
+		ids[i] = h.Learning.ID
+	}
+	return ids
+}
+
+func sameReasons(got, want []model.MatchReason) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range want {
+		if got[i].Signal != want[i].Signal || got[i].Detail != want[i].Detail {
+			return false
+		}
+	}
+	return true
+}
