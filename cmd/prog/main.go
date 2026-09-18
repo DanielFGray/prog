@@ -470,22 +470,25 @@ Examples:
 					CreatedAt: l.CreatedAt.Format(time.RFC3339),
 				})
 			}
+			suggestedConcepts := conceptsToJSON(concepts)
 			output := ItemShowJSON{
-				ID:               item.ID,
-				Title:            item.Title,
-				Type:             string(item.Type),
-				Status:           string(item.Status),
-				Priority:         item.Priority,
-				Project:          item.Project,
-				Parent:           item.ParentID,
-				Description:      item.Description,
-				DefinitionOfDone: item.DefinitionOfDone,
-				Labels:           labels,
-				Dependencies:     deps,
-				CreatedAt:        item.CreatedAt.Format(time.RFC3339),
-				UpdatedAt:        item.UpdatedAt.Format(time.RFC3339),
-				LastActivityAt:   item.LastActivityAt.Format(time.RFC3339),
-				Logs:             logEntries,
+				ID:                item.ID,
+				Title:             item.Title,
+				Type:              string(item.Type),
+				Status:            string(item.Status),
+				Priority:          item.Priority,
+				Project:           item.Project,
+				Parent:            item.ParentID,
+				Description:       item.Description,
+				DefinitionOfDone:  item.DefinitionOfDone,
+				Labels:            labels,
+				Dependencies:      deps,
+				CreatedAt:         item.CreatedAt.Format(time.RFC3339),
+				UpdatedAt:         item.UpdatedAt.Format(time.RFC3339),
+				LastActivityAt:    item.LastActivityAt.Format(time.RFC3339),
+				Logs:              logEntries,
+				SuggestedConcepts: suggestedConcepts,
+				Context:           itemContextJSON(item.ID, concepts),
 			}
 			b, err := json.MarshalIndent(output, "", "  ")
 			if err != nil {
@@ -2741,8 +2744,11 @@ func printItemDetail(item *model.Item, logs []model.Log, deps []string, concepts
 		}
 	}
 
+	fmt.Printf("\nContext retrieval:\n")
+	fmt.Printf("  Ranked for this task: prog context --task %s\n", item.ID)
+	fmt.Printf("  Scan ranked summaries: prog context --task %s --summary\n", item.ID)
 	if len(concepts) > 0 {
-		fmt.Printf("\nSuggested context:\n")
+		fmt.Printf("\nSuggested concepts:\n")
 		var conceptFlags []string
 		for _, c := range concepts {
 			summary := c.Summary
@@ -2752,7 +2758,7 @@ func printItemDetail(item *model.Item, logs []model.Log, deps []string, concepts
 			fmt.Printf("  %s (%d) - %s\n", c.Name, c.LearningCount, summary)
 			conceptFlags = append(conceptFlags, "-c "+c.Name)
 		}
-		fmt.Printf("\nLoad with: prog context %s --summary\n", strings.Join(conceptFlags, " "))
+		fmt.Printf("\nLoad by concept: prog context %s --summary\n", strings.Join(conceptFlags, " "))
 	}
 }
 
@@ -3041,21 +3047,64 @@ func optionalString(s string) *string {
 
 // ItemShowJSON is the JSON serialization format for show (full detail).
 type ItemShowJSON struct {
-	ID               string    `json:"id"`
-	Title            string    `json:"title"`
-	Type             string    `json:"type"`
-	Status           string    `json:"status"`
-	Priority         int       `json:"priority"`
-	Project          string    `json:"project"`
-	Parent           *string   `json:"parent"`
-	Description      string    `json:"description"`
-	DefinitionOfDone *string   `json:"definition_of_done"`
-	Labels           []string  `json:"labels"`
-	Dependencies     []string  `json:"dependencies"`
-	CreatedAt        string    `json:"created_at"`
-	UpdatedAt        string    `json:"updated_at"`
-	LastActivityAt   string    `json:"last_activity_at"`
-	Logs             []LogJSON `json:"logs"`
+	ID                string                 `json:"id"`
+	Title             string                 `json:"title"`
+	Type              string                 `json:"type"`
+	Status            string                 `json:"status"`
+	Priority          int                    `json:"priority"`
+	Project           string                 `json:"project"`
+	Parent            *string                `json:"parent"`
+	Description       string                 `json:"description"`
+	DefinitionOfDone  *string                `json:"definition_of_done"`
+	Labels            []string               `json:"labels"`
+	Dependencies      []string               `json:"dependencies"`
+	CreatedAt         string                 `json:"created_at"`
+	UpdatedAt         string                 `json:"updated_at"`
+	LastActivityAt    string                 `json:"last_activity_at"`
+	Logs              []LogJSON              `json:"logs"`
+	SuggestedConcepts []SuggestedConceptJSON `json:"suggested_concepts"`
+	Context           ItemContextJSON        `json:"context"`
+}
+
+// SuggestedConceptJSON is a concept surfaced as a useful fallback for task context.
+type SuggestedConceptJSON struct {
+	Name          string `json:"name"`
+	Summary       string `json:"summary"`
+	LearningCount int    `json:"learning_count"`
+}
+
+// ItemContextJSON gives agents the exact retrieval commands shown by human-readable show.
+type ItemContextJSON struct {
+	TaskCommand    string `json:"task_command"`
+	SummaryCommand string `json:"summary_command"`
+	ConceptCommand string `json:"concept_command,omitempty"`
+}
+
+func conceptsToJSON(concepts []model.Concept) []SuggestedConceptJSON {
+	output := make([]SuggestedConceptJSON, 0, len(concepts))
+	for _, concept := range concepts {
+		output = append(output, SuggestedConceptJSON{
+			Name:          concept.Name,
+			Summary:       concept.Summary,
+			LearningCount: concept.LearningCount,
+		})
+	}
+	return output
+}
+
+func itemContextJSON(taskID string, concepts []model.Concept) ItemContextJSON {
+	context := ItemContextJSON{
+		TaskCommand:    fmt.Sprintf("prog context --task %s", taskID),
+		SummaryCommand: fmt.Sprintf("prog context --task %s --summary", taskID),
+	}
+	if len(concepts) > 0 {
+		flags := make([]string, 0, len(concepts))
+		for _, concept := range concepts {
+			flags = append(flags, "-c "+concept.Name)
+		}
+		context.ConceptCommand = fmt.Sprintf("prog context %s --summary", strings.Join(flags, " "))
+	}
+	return context
 }
 
 // ItemListJSON is the JSON serialization format for list (show schema minus logs).
@@ -3324,10 +3373,15 @@ Run 'prog status' to see current state.
 ## Starting Work
 
 When picking up a task:
-1. prog show <task>                 # See task + suggested concepts
-2. prog context --task <id>         # Ranked learnings for that task
-   prog context -c X -c Y           # Or load by concept
-   prog context -c X --summary      # Or scan first if many learnings
+1. prog show <task>                         # Task details + retrieval commands
+2. prog context --task <task>               # Ranked learnings using task context
+   prog context --task <task> --summary     # Scan ranked one-line summaries first
+   prog context --task <task> --json        # Machine-readable ranked results
+
+If you don't have a task ID yet:
+  prog context -q "what you are investigating"  # Search by text
+  prog context -c X -c Y                       # Load known concepts
+  prog context --id <learning-id>              # Inspect one selected learning
 
 Load context that's relevant to your task. Don't skip it, don't load everything.
 
@@ -3376,6 +3430,9 @@ Why both? Two-phase retrieval:
 Good learnings are specific and actionable:
   ✓ prog learn "Schema migrations need built binary" -c database \
       --detail "go run doesn't embed assets; must use go build first"
+
+When a new learning replaces an old one, preserve the chain explicitly:
+  prog learn supersede <old-id> <new-id>
 
 Not learnings (use prog log <id> instead):
   ✗ "Fixed the auth bug"

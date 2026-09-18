@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -81,5 +82,76 @@ func TestPrintItemDetail_NoCountForSingleLog(t *testing.T) {
 	}
 	if !strings.Contains(output, "one entry") {
 		t.Errorf("missing log entry, output:\n%s", output)
+	}
+}
+
+func TestPrintItemDetail_AlwaysShowsTaskContextCommands(t *testing.T) {
+	item := &model.Item{ID: "ts-context1", Title: "Context task"}
+
+	output := captureOutput(func() {
+		printItemDetail(item, nil, nil, nil)
+	})
+
+	if !strings.Contains(output, "prog context --task ts-context1") {
+		t.Errorf("missing task context command, output:\n%s", output)
+	}
+	if !strings.Contains(output, "prog context --task ts-context1 --summary") {
+		t.Errorf("missing summary context command, output:\n%s", output)
+	}
+}
+
+func TestPrintItemDetail_ShowsConceptFallback(t *testing.T) {
+	item := &model.Item{ID: "ts-context2", Title: "Concept task"}
+	concepts := []model.Concept{{Name: "database", Summary: "Storage patterns", LearningCount: 3}}
+
+	output := captureOutput(func() {
+		printItemDetail(item, nil, nil, concepts)
+	})
+
+	if !strings.Contains(output, "Suggested concepts:") {
+		t.Errorf("missing suggested concepts heading, output:\n%s", output)
+	}
+	if !strings.Contains(output, "Load by concept: prog context -c database --summary") {
+		t.Errorf("missing concept fallback command, output:\n%s", output)
+	}
+}
+
+func TestItemContextJSON(t *testing.T) {
+	concepts := []model.Concept{{Name: "database"}}
+
+	got := itemContextJSON("ts-context3", concepts)
+	if got.TaskCommand != "prog context --task ts-context3" {
+		t.Errorf("task command = %q", got.TaskCommand)
+	}
+	if got.SummaryCommand != "prog context --task ts-context3 --summary" {
+		t.Errorf("summary command = %q", got.SummaryCommand)
+	}
+	if got.ConceptCommand != "prog context -c database --summary" {
+		t.Errorf("concept command = %q", got.ConceptCommand)
+	}
+}
+
+func TestItemShowJSON_IncludesContextGuidance(t *testing.T) {
+	concepts := []model.Concept{{Name: "database", Summary: "Storage patterns", LearningCount: 2}}
+	out := ItemShowJSON{
+		ID:                "ts-context4",
+		SuggestedConcepts: conceptsToJSON(concepts),
+		Context:           itemContextJSON("ts-context4", concepts),
+	}
+
+	b, err := json.Marshal(out)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var got ItemShowJSON
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(got.SuggestedConcepts) != 1 || got.SuggestedConcepts[0].Name != "database" {
+		t.Errorf("suggested concepts = %+v", got.SuggestedConcepts)
+	}
+	if got.Context.TaskCommand != "prog context --task ts-context4" {
+		t.Errorf("task command = %q", got.Context.TaskCommand)
 	}
 }

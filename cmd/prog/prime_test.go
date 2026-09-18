@@ -183,6 +183,18 @@ func TestPrintPrimeContent_ContextRetrieval(t *testing.T) {
 	if !strings.Contains(output, "will prompt for reflection") {
 		t.Error("should indicate prog done prompts for reflection")
 	}
+	for _, command := range []string{
+		"prog context --task <task>",
+		"prog context --task <task> --summary",
+		"prog context --task <task> --json",
+		"prog context -q",
+		"prog context --id <learning-id>",
+		"prog learn supersede <old-id> <new-id>",
+	} {
+		if !strings.Contains(output, command) {
+			t.Errorf("missing context workflow command: %s", command)
+		}
+	}
 }
 
 func setupTestDB(t *testing.T) *db.DB {
