@@ -386,10 +386,12 @@ Each phase filters, so agents only load what's actually relevant.
 | Command | Description |
 |---------|-------------|
 | `prog concepts` | List global concepts |
+| `prog context --task <id>` | Rank learnings for a task (title + description) |
 | `prog context -c <name>` | Retrieve learnings by concept(s) |
 | `prog context -q <query>` | Full-text search on learnings |
 | `prog learn <summary>` | Log a new learning |
 | `prog learn edit <id>` | Edit a learning's summary or detail |
+| `prog learn supersede <old> <new>` | Atomically replace a learning |
 | `prog learn stale <id>` | Mark learning as outdated |
 | `prog learn rm <id>` | Delete a learning |
 
@@ -402,7 +404,10 @@ prog concepts
 # auth                  3  2h ago        Token lifecycle, refresh
 # database              2  1d ago        SQLite patterns
 
-# Retrieve by concept (union of multiple concepts)
+# Rank learnings for the task you are about to start
+prog context --task ts-abc123
+
+# Retrieve by concept (ranked; reasons shown)
 prog context -c auth -c database
 
 # Full-text search when you don't know the concept
@@ -410,8 +415,19 @@ prog context -q "race condition"
 
 # Include stale learnings for historical context
 prog context -c auth --include-stale
+
+# Machine-readable hits with match reasons and typed evidence
+prog context --task ts-abc123 --json
 ```
 
+Ranked results explain *why* each learning matched (`exact_summary`,
+`concept_name`, `task_title`, `file_path`, …). Scores are internal ranking
+only and are not part of the CLI contract. Evidence uses path plus optional
+line ranges (`path:12`, `path:10-20`).
+
+Learnings live in SQLite (`~/.prog/prog.db`). Markdown pages are not the
+canonical store; see `docs/context-engine-spec.md` for the superseded proposal
+and the embedding decision.
 ### Logging Learnings (Reflection)
 
 Log learnings at the end of a session during reflection. This is more efficient than logging during work because:
@@ -487,7 +503,8 @@ prog context -c auth --json           # Load all for a concept
 Then apply actions:
 - **Archive**: `prog learn stale lrn-a lrn-b --reason "Consolidated"`
 - **Update**: `prog learn edit lrn-abc --summary "Clearer summary"`
-- **Consolidate**: Archive originals, create new combined learning
+- **Consolidate**: `prog learn supersede lrn-old lrn-new` (marks old stale and links replacement)
+- **Consolidate (manual)**: Archive originals, create new combined learning
 
 #### Marking Learnings Stale
 

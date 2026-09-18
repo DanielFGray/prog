@@ -70,6 +70,7 @@ var (
 	flagConceptsStats    bool
 	flagContextConcept   []string
 	flagContextQuery     string
+	flagContextTask      string
 	flagContextStale     bool
 	flagContextSummary   bool
 	flagContextID        string
@@ -1359,6 +1360,7 @@ CONTEXT MANAGEMENT FLOW:
                           ↓
 ┌─────────────────────────────────────────────────────────────┐
 │ 2. Future Retrieval: Load context before starting work     │
+│    → prog context --task <id>       # ranked for a task    │
 │    → prog context -c concept        # by concept           │
 │    → prog context -q "search term"  # full-text search     │
 │    → prog context --summary         # scan all one-liners  │
@@ -1376,7 +1378,7 @@ LEARNING STRUCTURE:
   │ ├─ Summary: "One-liner for scanning" │
   │ ├─ Detail: "Full context..."         │
   │ ├─ Concepts: [auth, concurrency]     │
-  │ ├─ Files: [auth.go, token.go]        │
+  │ ├─ Evidence: path[:lines] (+ note)   │
   │ ├─ Status: active/stale/archived     │
   │ └─ Task ID: ts-abc123 (optional)     │
   └─────────────────────────────────────┘
@@ -1386,7 +1388,8 @@ Examples:
   prog learn "Config loaded from env first" -c config -f config.go
   prog learn "Migrations require the built binary, not go run" -c database --task ts-a1b2c3
   prog learn "Token refresh issue" -c auth --detail "The mutex only protects..."
-  echo "multi-line detail" | prog learn "summary" -c auth --detail -`,
+  echo "multi-line detail" | prog learn "summary" -c auth --detail -
+  prog learn supersede lrn-old001 lrn-new002`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := rejectKnowledgeProject(cmd); err != nil {
@@ -1585,6 +1588,37 @@ Example:
 	},
 }
 
+var learnSupersedeCmd = &cobra.Command{
+	Use:   "supersede <old-id> <new-id>",
+	Short: "Replace a learning with a newer one",
+	Long: `Atomically link a replacement learning to the one it supersedes and mark the old learning stale.
+
+Validation and transactionality are owned by the database: missing IDs, self-links,
+cycles, duplicates, and inactive replacements are rejected with no partial writes.
+
+Examples:
+  prog learn supersede lrn-old001 lrn-new002`,
+	Args: cobra.ExactArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := rejectKnowledgeProject(cmd); err != nil {
+			return err
+		}
+		database, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = database.Close() }()
+
+		oldID, newID := args[0], args[1]
+		if err := database.SupersedeLearning(newID, oldID); err != nil {
+			return err
+		}
+		fmt.Printf("Superseded %s with %s\n", oldID, newID)
+		database.BackupQuiet()
+		return nil
+	},
+}
+
 var conceptsCmd = &cobra.Command{
 	Use:   "concepts [name]",
 	Short: "List or edit global concepts",
@@ -1613,11 +1647,11 @@ CONCEPT MODEL:
 
 RETRIEVAL PATTERNS:
   1. By Concept: prog context -c auth
-     → Returns all learnings tagged with "auth"
+     → Returns ranked learnings tagged with "auth"
   
-  2. By Task: prog concepts --related ts-abc123
-     → Suggests concepts based on task title/description
-     → Then: prog context -c <suggested-concept>
+  2. By Task: prog context --task ts-abc123
+     → Ranks learnings from the task title and description
+     → Or: prog concepts --related ts-abc123 then context -c <name>
   
   3. Full-Text Search: prog context -q "token refresh"
      → Searches across all learning summaries and details
@@ -1835,18 +1869,22 @@ Example:
 var contextCmd = &cobra.Command{
 	Use:   "context",
 	Short: "Retrieve learnings for context",
-	Long: `Retrieve learnings by concept, full-text search, or specific ID.
+	Long: `Retrieve learnings by task, concept, full-text search, or specific ID.
+
+Ranked retrieval combines FTS, concepts, task title/description, and file
+evidence. Every ranked hit includes match reasons (signals), not an opaque score.
 
 Use this to load relevant context before starting work on a task.
 
 Examples:
+  prog context --task ts-abc123                # ranked for a task
   prog context --summary                       # all learnings, grouped by concept
   prog context -c auth -c concurrency          # by concepts
   prog context -q "rate limit"                 # full-text search
   prog context -c auth --summary               # one-liner per learning
   prog context --id lrn-abc123                 # specific learning by ID
   prog context -c auth --include-stale         # include stale learnings
-  prog context -c auth --json                  # JSON output for agents`,
+  prog context --task ts-abc123 --json         # JSON with reasons and evidence`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := rejectKnowledgeProject(cmd); err != nil {
 			return err
@@ -1870,8 +1908,10 @@ Examples:
 			return nil
 		}
 
-		// Mode 2: All learnings with --summary (no concepts/query required)
-		if flagContextSummary && len(flagContextConcept) == 0 && flagContextQuery == "" {
+		ranked := len(flagContextConcept) > 0 || flagContextQuery != "" || flagContextTask != ""
+
+		// Mode 2: All learnings with --summary (no ranked filters)
+		if flagContextSummary && !ranked {
 			learnings, err := database.GetAllLearnings(flagContextStale)
 			if err != nil {
 				return err
@@ -1890,7 +1930,6 @@ Examples:
 				return printLearningsJSON(learnings)
 			}
 
-			// Get concept summaries for grouped output
 			concepts, _ := database.ListConcepts(false)
 			conceptMap := make(map[string]string)
 			for _, c := range concepts {
@@ -1900,23 +1939,21 @@ Examples:
 			return nil
 		}
 
-		// Modes 3 & 4 require concepts or query
-		if len(flagContextConcept) == 0 && flagContextQuery == "" {
-			return fmt.Errorf("specify concepts (-c), query (-q), or use --summary for all")
+		if !ranked {
+			return fmt.Errorf("specify concepts (-c), query (-q), --task, or use --summary for all")
 		}
 
-		var learnings []model.Learning
-
-		if len(flagContextConcept) > 0 {
-			learnings, err = database.GetLearningsByConcepts(flagContextConcept, flagContextStale)
-		} else {
-			learnings, err = database.SearchLearnings(flagContextQuery, flagContextStale)
-		}
+		hits, err := database.SearchKnowledge(model.KnowledgeQuery{
+			Text:         flagContextQuery,
+			TaskID:       flagContextTask,
+			Concepts:     flagContextConcept,
+			IncludeStale: flagContextStale,
+		})
 		if err != nil {
 			return err
 		}
 
-		if len(learnings) == 0 {
+		if len(hits) == 0 {
 			if flagContextJSON {
 				fmt.Println("[]")
 				return nil
@@ -1925,25 +1962,21 @@ Examples:
 			return nil
 		}
 
-		// JSON mode
 		if flagContextJSON {
-			return printLearningsJSON(learnings)
+			return printKnowledgeHitsJSON(hits)
 		}
 
-		// Mode 3: Summary mode (one-liners) for specific concepts
 		if flagContextSummary {
-			// Get concept summaries for header
 			concepts, _ := database.ListConcepts(false)
 			conceptMap := make(map[string]string)
 			for _, c := range concepts {
 				conceptMap[c.Name] = c.Summary
 			}
-			printLearningSummaries(learnings, flagContextConcept, conceptMap)
+			printKnowledgeHitSummaries(hits, flagContextConcept, conceptMap)
 			return nil
 		}
 
-		// Mode 4: Full output
-		printLearnings(learnings)
+		printKnowledgeHits(hits)
 		return nil
 	},
 }
@@ -2526,6 +2559,7 @@ func init() {
 	learnCmd.AddCommand(learnEditCmd)
 	learnCmd.AddCommand(learnStaleCmd)
 	learnCmd.AddCommand(learnRmCmd)
+	learnCmd.AddCommand(learnSupersedeCmd)
 
 	// learn edit flags
 	learnEditCmd.Flags().StringVar(&flagLearnEditSummary, "summary", "", "New summary for the learning")
@@ -2552,6 +2586,7 @@ func init() {
 	// context flags
 	contextCmd.Flags().StringArrayVarP(&flagContextConcept, "concept", "c", nil, "Concept to retrieve learnings for (can be repeated)")
 	contextCmd.Flags().StringVarP(&flagContextQuery, "query", "q", "", "Full-text search query")
+	contextCmd.Flags().StringVar(&flagContextTask, "task", "", "Rank learnings for a task using its title and description")
 	contextCmd.Flags().BoolVar(&flagContextStale, "include-stale", false, "Include stale learnings in results")
 	contextCmd.Flags().BoolVar(&flagContextSummary, "summary", false, "Show one-liner per learning (no detail)")
 	contextCmd.Flags().StringVar(&flagContextID, "id", "", "Load specific learning by ID")
@@ -2855,37 +2890,103 @@ func printLabelsTable(labels []model.Label) {
 	}
 }
 
+func formatLearningSource(s model.LearningSource) string {
+	var out string
+	switch {
+	case s.StartLine != nil && s.EndLine != nil:
+		out = fmt.Sprintf("%s:%d-%d", s.Path, *s.StartLine, *s.EndLine)
+	case s.StartLine != nil:
+		out = fmt.Sprintf("%s:%d", s.Path, *s.StartLine)
+	default:
+		out = s.Path
+	}
+	if s.Note != "" {
+		out += " (" + s.Note + ")"
+	}
+	return out
+}
+
+func formatMatchReason(r model.MatchReason) string {
+	if r.Detail == "" {
+		return r.Signal
+	}
+	return fmt.Sprintf("%s: %s", r.Signal, r.Detail)
+}
+
+func printLearningRelations(l model.Learning) {
+	var supersedes, supersededBy []string
+	for _, r := range l.Relations {
+		if r.Kind != model.LearningRelationKindSupersedes {
+			continue
+		}
+		if r.SourceID == l.ID {
+			supersedes = append(supersedes, r.TargetID)
+		}
+		if r.TargetID == l.ID {
+			supersededBy = append(supersededBy, r.SourceID)
+		}
+	}
+	if len(supersedes) > 0 {
+		fmt.Printf("Supersedes: %s\n", strings.Join(supersedes, ", "))
+	}
+	if len(supersededBy) > 0 {
+		fmt.Printf("Superseded by: %s\n", strings.Join(supersededBy, ", "))
+	}
+}
+
+func printLearningBody(l model.Learning, reasons []model.MatchReason) {
+	status := ""
+	if l.Status == model.LearningStatusStale {
+		status = " [stale]"
+	}
+	fmt.Printf("## %s%s (%s)\n", l.ID, status, formatTimeAgo(l.CreatedAt))
+
+	fmt.Println(l.Summary)
+
+	if l.Detail != "" {
+		fmt.Printf("\n%s\n", l.Detail)
+	}
+
+	if len(reasons) > 0 {
+		fmt.Println("\nMatched:")
+		for _, r := range reasons {
+			fmt.Printf("  %s\n", formatMatchReason(r))
+		}
+	}
+
+	if len(l.Concepts) > 0 {
+		fmt.Printf("\nConcepts: %s\n", strings.Join(l.Concepts, ", "))
+	}
+	if len(l.Sources) > 0 {
+		parts := make([]string, len(l.Sources))
+		for i, s := range l.Sources {
+			parts[i] = formatLearningSource(s)
+		}
+		fmt.Printf("Evidence: %s\n", strings.Join(parts, ", "))
+	} else if len(l.Files) > 0 {
+		fmt.Printf("Files: %s\n", strings.Join(l.Files, ", "))
+	}
+	if l.TaskID != nil {
+		fmt.Printf("Task: %s\n", *l.TaskID)
+	}
+	printLearningRelations(l)
+}
+
 func printLearnings(learnings []model.Learning) {
 	for i, l := range learnings {
 		if i > 0 {
 			fmt.Println()
 		}
+		printLearningBody(l, nil)
+	}
+}
 
-		// Header with ID, status, and age
-		status := ""
-		if l.Status == model.LearningStatusStale {
-			status = " [stale]"
+func printKnowledgeHits(hits []model.KnowledgeHit) {
+	for i, hit := range hits {
+		if i > 0 {
+			fmt.Println()
 		}
-		fmt.Printf("## %s%s (%s)\n", l.ID, status, formatTimeAgo(l.CreatedAt))
-
-		// Summary
-		fmt.Println(l.Summary)
-
-		// Detail if present
-		if l.Detail != "" {
-			fmt.Printf("\n%s\n", l.Detail)
-		}
-
-		// Metadata
-		if len(l.Concepts) > 0 {
-			fmt.Printf("\nConcepts: %s\n", strings.Join(l.Concepts, ", "))
-		}
-		if len(l.Files) > 0 {
-			fmt.Printf("Files: %s\n", strings.Join(l.Files, ", "))
-		}
-		if l.TaskID != nil {
-			fmt.Printf("Task: %s\n", *l.TaskID)
-		}
+		printLearningBody(hit.Learning, hit.Reasons)
 	}
 }
 
@@ -2981,35 +3082,104 @@ type LogJSON struct {
 	CreatedAt string `json:"created_at"`
 }
 
+// LearningSourceJSON is the JSON form of typed file evidence.
+type LearningSourceJSON struct {
+	Path      string `json:"path"`
+	StartLine *int   `json:"start_line,omitempty"`
+	EndLine   *int   `json:"end_line,omitempty"`
+	Note      string `json:"note,omitempty"`
+}
+
+// MatchReasonJSON is one retrieval signal that contributed to a hit.
+type MatchReasonJSON struct {
+	Signal string `json:"signal"`
+	Detail string `json:"detail,omitempty"`
+}
+
+// LearningRelationJSON is a directed learning-to-learning edge.
+type LearningRelationJSON struct {
+	SourceID string `json:"source_id"`
+	TargetID string `json:"target_id"`
+	Kind     string `json:"kind"`
+}
+
 // LearningJSON is the JSON serialization format for learnings.
 type LearningJSON struct {
-	ID        string   `json:"id"`
-	Summary   string   `json:"summary"`
-	Detail    string   `json:"detail,omitempty"`
-	Concepts  []string `json:"concepts"`
-	Files     []string `json:"files,omitempty"`
-	CreatedAt string   `json:"created_at"`
-	Status    string   `json:"status"`
+	ID        string                 `json:"id"`
+	Summary   string                 `json:"summary"`
+	Detail    string                 `json:"detail,omitempty"`
+	Concepts  []string               `json:"concepts"`
+	Files     []string               `json:"files,omitempty"`
+	Sources   []LearningSourceJSON   `json:"sources,omitempty"`
+	Reasons   []MatchReasonJSON      `json:"reasons,omitempty"`
+	Relations []LearningRelationJSON `json:"relations,omitempty"`
+	TaskID    *string                `json:"task_id,omitempty"`
+	CreatedAt string                 `json:"created_at"`
+	Status    string                 `json:"status"`
+}
+
+func learningToJSON(l model.Learning, reasons []model.MatchReason) LearningJSON {
+	lj := LearningJSON{
+		ID:        l.ID,
+		Summary:   l.Summary,
+		Detail:    l.Detail,
+		Concepts:  l.Concepts,
+		Files:     l.Files,
+		TaskID:    l.TaskID,
+		CreatedAt: l.CreatedAt.Format(time.RFC3339),
+		Status:    string(l.Status),
+	}
+	if lj.Concepts == nil {
+		lj.Concepts = []string{}
+	}
+	if len(l.Sources) > 0 {
+		lj.Sources = make([]LearningSourceJSON, len(l.Sources))
+		for i, s := range l.Sources {
+			lj.Sources[i] = LearningSourceJSON{
+				Path:      s.Path,
+				StartLine: s.StartLine,
+				EndLine:   s.EndLine,
+				Note:      s.Note,
+			}
+		}
+	}
+	if len(reasons) > 0 {
+		lj.Reasons = make([]MatchReasonJSON, len(reasons))
+		for i, r := range reasons {
+			lj.Reasons[i] = MatchReasonJSON{Signal: r.Signal, Detail: r.Detail}
+		}
+	}
+	if len(l.Relations) > 0 {
+		lj.Relations = make([]LearningRelationJSON, len(l.Relations))
+		for i, r := range l.Relations {
+			lj.Relations[i] = LearningRelationJSON{
+				SourceID: r.SourceID,
+				TargetID: r.TargetID,
+				Kind:     string(r.Kind),
+			}
+		}
+	}
+	return lj
 }
 
 func printLearningsJSON(learnings []model.Learning) error {
 	output := make([]LearningJSON, 0, len(learnings))
 	for _, l := range learnings {
-		lj := LearningJSON{
-			ID:        l.ID,
-			Summary:   l.Summary,
-			Detail:    l.Detail,
-			Concepts:  l.Concepts,
-			Files:     l.Files,
-			CreatedAt: l.CreatedAt.Format(time.RFC3339),
-			Status:    string(l.Status),
-		}
-		if lj.Concepts == nil {
-			lj.Concepts = []string{}
-		}
-		output = append(output, lj)
+		output = append(output, learningToJSON(l, nil))
 	}
-	b, err := json.MarshalIndent(output, "", "  ")
+	return printJSON(output)
+}
+
+func printKnowledgeHitsJSON(hits []model.KnowledgeHit) error {
+	output := make([]LearningJSON, 0, len(hits))
+	for _, hit := range hits {
+		output = append(output, learningToJSON(hit.Learning, hit.Reasons))
+	}
+	return printJSON(output)
+}
+
+func printJSON(v any) error {
+	b, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal JSON: %w", err)
 	}
@@ -3018,7 +3188,20 @@ func printLearningsJSON(learnings []model.Learning) error {
 }
 
 func printLearningSummaries(learnings []model.Learning, requestedConcepts []string, conceptSummaries map[string]string) {
-	// Print concept headers with summaries
+	printConceptSummaryHeaders(requestedConcepts, conceptSummaries)
+	for _, l := range learnings {
+		printLearningSummaryLine(l, nil)
+	}
+}
+
+func printKnowledgeHitSummaries(hits []model.KnowledgeHit, requestedConcepts []string, conceptSummaries map[string]string) {
+	printConceptSummaryHeaders(requestedConcepts, conceptSummaries)
+	for _, hit := range hits {
+		printLearningSummaryLine(hit.Learning, hit.Reasons)
+	}
+}
+
+func printConceptSummaryHeaders(requestedConcepts []string, conceptSummaries map[string]string) {
 	for _, conceptName := range requestedConcepts {
 		summary := conceptSummaries[conceptName]
 		if summary == "" {
@@ -3029,14 +3212,16 @@ func printLearningSummaries(learnings []model.Learning, requestedConcepts []stri
 	if len(requestedConcepts) > 0 {
 		fmt.Println()
 	}
+}
 
-	// Print one-liner per learning
-	for _, l := range learnings {
-		status := ""
-		if l.Status == model.LearningStatusStale {
-			status = " [stale]"
-		}
-		fmt.Printf("  %s: %s%s\n", l.ID, l.Summary, status)
+func printLearningSummaryLine(l model.Learning, reasons []model.MatchReason) {
+	status := ""
+	if l.Status == model.LearningStatusStale {
+		status = " [stale]"
+	}
+	fmt.Printf("  %s: %s%s\n", l.ID, l.Summary, status)
+	for _, r := range reasons {
+		fmt.Printf("    %s\n", formatMatchReason(r))
 	}
 }
 
@@ -3140,7 +3325,8 @@ Run 'prog status' to see current state.
 
 When picking up a task:
 1. prog show <task>                 # See task + suggested concepts
-2. prog context -c X -c Y           # Load relevant concepts
+2. prog context --task <id>         # Ranked learnings for that task
+   prog context -c X -c Y           # Or load by concept
    prog context -c X --summary      # Or scan first if many learnings
 
 Load context that's relevant to your task. Don't skip it, don't load everything.
@@ -3246,10 +3432,12 @@ prog edit <id> --dod "..."           # Set definition of done
 prog label <id> <name>               # Add label to task
 
 # Context retrieval
+prog context --task <id>       # Ranked learnings for a task
 prog context -c concept        # Load learnings for a concept
 prog context -c X --summary    # Scan one-liners first
 prog concepts                  # List available concepts
 prog learn "summary" -c X --detail "explanation"  # Log with both parts
+prog learn supersede <old> <new>  # Replace a learning atomically
 
 # Filtering
 prog list -p myproject         # Filter by project
