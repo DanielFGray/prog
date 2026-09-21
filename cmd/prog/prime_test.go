@@ -171,7 +171,6 @@ func TestPrintPrimeContent_ContextRetrieval(t *testing.T) {
 		printPrimeContent(nil)
 	})
 
-	// Should contain Starting Work section
 	if !strings.Contains(output, "Starting Work") {
 		t.Error("missing Starting Work section")
 	}
@@ -185,15 +184,21 @@ func TestPrintPrimeContent_ContextRetrieval(t *testing.T) {
 	}
 	for _, command := range []string{
 		"prog context --task <task>",
-		"prog context --task <task> --summary",
+		"prog context --id <learning-id>",
+		"prog context --task <task> --full",
 		"prog context --task <task> --json",
 		"prog context -q",
-		"prog context --id <learning-id>",
 		"prog learn supersede <old-id> <new-id>",
 	} {
 		if !strings.Contains(output, command) {
 			t.Errorf("missing context workflow command: %s", command)
 		}
+	}
+	if !strings.Contains(output, "Defaults are summaries + cap 10") {
+		t.Error("prime should teach summary-first capped defaults")
+	}
+	if !strings.Contains(output, "--all") {
+		t.Error("prime should mention --all for unscoped listing")
 	}
 }
 

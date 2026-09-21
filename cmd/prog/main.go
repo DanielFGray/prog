@@ -72,7 +72,10 @@ var (
 	flagContextQuery     string
 	flagContextTask      string
 	flagContextStale     bool
-	flagContextSummary   bool
+	flagContextSummary   bool // compatibility no-op; summaries are the default
+	flagContextFull      bool
+	flagContextAll       bool
+	flagContextLimit     int
 	flagContextID        string
 	flagContextJSON      bool
 	flagLearnDetail      string
@@ -1363,16 +1366,17 @@ CONTEXT MANAGEMENT FLOW:
                           ↓
 ┌─────────────────────────────────────────────────────────────┐
 │ 2. Future Retrieval: Load context before starting work     │
-│    → prog context --task <id>       # ranked for a task    │
+│    → prog context --task <id>       # ranked summaries     │
 │    → prog context -c concept        # by concept           │
 │    → prog context -q "search term"  # full-text search     │
-│    → prog context --summary         # scan all one-liners  │
+│    → prog context --id <lrn-id>     # one full body        │
+│    → prog context --all             # unscoped, capped     │
 └─────────────────────────────────────────────────────────────┘
                           ↓
 ┌─────────────────────────────────────────────────────────────┐
 │ 3. Two-Phase Retrieval:                                    │
-│    Phase 1: See summaries (lightweight, fast)              │
-│    Phase 2: Load full detail only when relevant            │
+│    Phase 1: Summaries by default (capped; --limit)         │
+│    Phase 2: --id or --full only when detail is needed      │
 └─────────────────────────────────────────────────────────────┘
 
 LEARNING STRUCTURE:
@@ -1869,6 +1873,8 @@ Example:
 	},
 }
 
+const defaultContextLimit = 10
+
 var contextCmd = &cobra.Command{
 	Use:   "context",
 	Short: "Retrieve learnings for context",
@@ -1877,17 +1883,21 @@ var contextCmd = &cobra.Command{
 Ranked retrieval combines FTS, concepts, task title/description, and file
 evidence. Every ranked hit includes match reasons (signals), not an opaque score.
 
-Use this to load relevant context before starting work on a task.
+Defaults are agent-safe: ranked results are one-line summaries with match
+reasons, capped at 10. Full bodies require --full or --id. Unscoped corpus
+listing requires --all (still capped unless --limit is raised).
 
 Examples:
-  prog context --task ts-abc123                # ranked for a task
-  prog context --summary                       # all learnings, grouped by concept
-  prog context -c auth -c concurrency          # by concepts
-  prog context -q "rate limit"                 # full-text search
-  prog context -c auth --summary               # one-liner per learning
-  prog context --id lrn-abc123                 # specific learning by ID
+  prog context --task ts-abc123                # ranked summaries (default)
+  prog context --task ts-abc123 --full         # ranked full bodies
+  prog context --task ts-abc123 --limit 25     # raise the ranked cap
+  prog context -c auth -c concurrency          # by concepts (summaries)
+  prog context -q "rate limit"                 # full-text search (summaries)
+  prog context --id lrn-abc123                 # one learning, full body
+  prog context --all                           # unscoped summaries (capped)
+  prog context --all --limit 50                # unscoped with larger cap
   prog context -c auth --include-stale         # include stale learnings
-  prog context --task ts-abc123 --json         # JSON with reasons and evidence`,
+  prog context --task ts-abc123 --json         # JSON with reasons, total, truncation`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := rejectKnowledgeProject(cmd); err != nil {
 			return err
@@ -1898,90 +1908,163 @@ Examples:
 		}
 		defer func() { _ = database.Close() }()
 
-		// Mode 1: Specific learning by ID
-		if flagContextID != "" {
-			learning, err := database.GetLearning(flagContextID)
-			if err != nil {
-				return err
-			}
-			if flagContextJSON {
-				return printLearningsJSON([]model.Learning{*learning})
-			}
-			printLearnings([]model.Learning{*learning})
-			return nil
-		}
-
-		ranked := len(flagContextConcept) > 0 || flagContextQuery != "" || flagContextTask != ""
-
-		// Mode 2: All learnings with --summary (no ranked filters)
-		if flagContextSummary && !ranked {
-			learnings, err := database.GetAllLearnings(flagContextStale)
-			if err != nil {
-				return err
-			}
-
-			if len(learnings) == 0 {
-				if flagContextJSON {
-					fmt.Println("[]")
-					return nil
-				}
-				fmt.Println("No learnings found")
-				return nil
-			}
-
-			if flagContextJSON {
-				return printLearningsJSON(learnings)
-			}
-
-			concepts, _ := database.ListConcepts(false)
-			conceptMap := make(map[string]string)
-			for _, c := range concepts {
-				conceptMap[c.Name] = c.Summary
-			}
-			printAllLearningSummaries(learnings, conceptMap)
-			return nil
-		}
-
-		if !ranked {
-			return fmt.Errorf("specify concepts (-c), query (-q), --task, or use --summary for all")
-		}
-
-		hits, err := database.SearchKnowledge(model.KnowledgeQuery{
-			Text:         flagContextQuery,
-			TaskID:       flagContextTask,
+		return runContext(database, contextOptions{
 			Concepts:     flagContextConcept,
+			Query:        flagContextQuery,
+			TaskID:       flagContextTask,
+			ID:           flagContextID,
 			IncludeStale: flagContextStale,
+			Full:         flagContextFull,
+			All:          flagContextAll,
+			Limit:        flagContextLimit,
+			JSON:         flagContextJSON,
+		})
+	},
+}
+
+// contextOptions configures a single prog context invocation.
+type contextOptions struct {
+	Concepts     []string
+	Query        string
+	TaskID       string
+	ID           string
+	IncludeStale bool
+	Full         bool
+	All          bool
+	Limit        int
+	JSON         bool
+}
+
+func runContext(database *db.DB, opts contextOptions) error {
+	// --id: single-learning full-body resolve; bypasses ranked caps.
+	if opts.ID != "" {
+		learning, err := database.GetLearning(opts.ID)
+		if err != nil {
+			return err
+		}
+		if opts.JSON {
+			return printLearningsJSON([]model.Learning{*learning})
+		}
+		printLearnings([]model.Learning{*learning})
+		return nil
+	}
+
+	ranked := len(opts.Concepts) > 0 || opts.Query != "" || opts.TaskID != ""
+	if opts.All && ranked {
+		return fmt.Errorf("--all cannot be combined with -c, -q, or --task")
+	}
+	if !ranked && !opts.All {
+		return fmt.Errorf("specify concepts (-c), query (-q), --task, or --all for unscoped listing")
+	}
+
+	limit := opts.Limit
+	if limit < 0 {
+		limit = 0
+	}
+
+	if ranked {
+		hits, err := database.SearchKnowledge(model.KnowledgeQuery{
+			Text:         opts.Query,
+			TaskID:       opts.TaskID,
+			Concepts:     opts.Concepts,
+			IncludeStale: opts.IncludeStale,
 		})
 		if err != nil {
 			return err
 		}
+		capped, total, truncated := capContextSlice(hits, limit)
+		return emitContextHits(database, capped, opts.Concepts, contextPage{
+			Total: total, Truncated: truncated, Limit: limit, Full: opts.Full, JSON: opts.JSON,
+		})
+	}
 
-		if len(hits) == 0 {
-			if flagContextJSON {
-				fmt.Println("[]")
-				return nil
-			}
-			fmt.Println("No learnings found")
-			return nil
-		}
+	learnings, err := database.GetAllLearnings(opts.IncludeStale)
+	if err != nil {
+		return err
+	}
+	capped, total, truncated := capContextSlice(learnings, limit)
+	return emitContextLearnings(database, capped, contextPage{
+		Total: total, Truncated: truncated, Limit: limit, Full: opts.Full, JSON: opts.JSON,
+	})
+}
 
-		if flagContextJSON {
-			return printKnowledgeHitsJSON(hits)
-		}
+func capContextSlice[T any](items []T, limit int) (capped []T, total int, truncated bool) {
+	total = len(items)
+	if limit >= total {
+		return items, total, false
+	}
+	return items[:limit], total, true
+}
 
-		if flagContextSummary {
-			concepts, _ := database.ListConcepts(false)
-			conceptMap := make(map[string]string)
-			for _, c := range concepts {
-				conceptMap[c.Name] = c.Summary
-			}
-			printKnowledgeHitSummaries(hits, flagContextConcept, conceptMap)
-			return nil
-		}
+// contextPage is the shared selection metadata for one capped context emission.
+type contextPage struct {
+	Total     int
+	Truncated bool
+	Limit     int
+	Full      bool
+	JSON      bool
+}
 
+func emitContextHits(database *db.DB, hits []model.KnowledgeHit, concepts []string, page contextPage) error {
+	if len(hits) == 0 {
+		return emitContextEmpty(page)
+	}
+	if page.JSON {
+		return printContextLearningsJSON(knowledgeHitsToLearningJSON(hits), !page.Full, page)
+	}
+	if page.Full {
 		printKnowledgeHits(hits)
-		return nil
-	},
+	} else {
+		printKnowledgeHitSummaries(hits, concepts, loadConceptSummaryMap(database))
+	}
+	printContextTruncation(page.Truncated, len(hits), page.Total)
+	return nil
+}
+
+func emitContextLearnings(database *db.DB, learnings []model.Learning, page contextPage) error {
+	if len(learnings) == 0 {
+		return emitContextEmpty(page)
+	}
+	if page.JSON {
+		return printContextLearningsJSON(learningsToLearningJSON(learnings), !page.Full, page)
+	}
+	if page.Full {
+		printLearnings(learnings)
+	} else {
+		printAllLearningSummaries(learnings, loadConceptSummaryMap(database))
+	}
+	printContextTruncation(page.Truncated, len(learnings), page.Total)
+	return nil
+}
+
+func emitContextEmpty(page contextPage) error {
+	if page.JSON {
+		return printContextResultJSON(ContextResultJSON{
+			Total: page.Total, Returned: 0, Truncated: false, Limit: page.Limit,
+			Learnings: []LearningJSON{},
+		})
+	}
+	fmt.Println("No learnings found")
+	return nil
+}
+
+func loadConceptSummaryMap(database *db.DB) map[string]string {
+	conceptMap := make(map[string]string)
+	concepts, err := database.ListConcepts(false)
+	if err != nil {
+		return conceptMap
+	}
+	for _, c := range concepts {
+		conceptMap[c.Name] = c.Summary
+	}
+	return conceptMap
+}
+
+func printContextTruncation(truncated bool, returned, total int) {
+	if !truncated {
+		return
+	}
+	fmt.Printf("\n(showing %d of %d; pass --limit N to see more)\n", returned, total)
 }
 
 var onboardCmd = &cobra.Command{
@@ -2591,8 +2674,11 @@ func init() {
 	contextCmd.Flags().StringVarP(&flagContextQuery, "query", "q", "", "Full-text search query")
 	contextCmd.Flags().StringVar(&flagContextTask, "task", "", "Rank learnings for a task using its title and description")
 	contextCmd.Flags().BoolVar(&flagContextStale, "include-stale", false, "Include stale learnings in results")
-	contextCmd.Flags().BoolVar(&flagContextSummary, "summary", false, "Show one-liner per learning (no detail)")
-	contextCmd.Flags().StringVar(&flagContextID, "id", "", "Load specific learning by ID")
+	contextCmd.Flags().BoolVar(&flagContextSummary, "summary", false, "Compatibility no-op (summaries are the default)")
+	contextCmd.Flags().BoolVar(&flagContextFull, "full", false, "Include learning detail bodies (default: summaries only)")
+	contextCmd.Flags().BoolVar(&flagContextAll, "all", false, "List unscoped corpus (still capped by --limit)")
+	contextCmd.Flags().IntVar(&flagContextLimit, "limit", defaultContextLimit, "Max ranked/unscoped results to return (default 10)")
+	contextCmd.Flags().StringVar(&flagContextID, "id", "", "Load specific learning by ID (full body; bypasses --limit)")
 	contextCmd.Flags().BoolVar(&flagContextJSON, "json", false, "Output as JSON for machine processing")
 
 	// backup flags
@@ -3152,6 +3238,17 @@ type LearningRelationJSON struct {
 	Kind     string `json:"kind"`
 }
 
+// ContextResultJSON is the JSON envelope for ranked and unscoped context output.
+// Selection matches text mode: summaries omit detail unless --full; truncation
+// and totals are always explicit.
+type ContextResultJSON struct {
+	Total     int            `json:"total"`
+	Returned  int            `json:"returned"`
+	Truncated bool           `json:"truncated"`
+	Limit     int            `json:"limit"`
+	Learnings []LearningJSON `json:"learnings"`
+}
+
 // LearningJSON is the JSON serialization format for learnings.
 type LearningJSON struct {
 	ID        string                 `json:"id"`
@@ -3212,19 +3309,46 @@ func learningToJSON(l model.Learning, reasons []model.MatchReason) LearningJSON 
 }
 
 func printLearningsJSON(learnings []model.Learning) error {
-	output := make([]LearningJSON, 0, len(learnings))
-	for _, l := range learnings {
-		output = append(output, learningToJSON(l, nil))
-	}
-	return printJSON(output)
+	return printJSON(learningsToLearningJSON(learnings))
 }
 
-func printKnowledgeHitsJSON(hits []model.KnowledgeHit) error {
-	output := make([]LearningJSON, 0, len(hits))
-	for _, hit := range hits {
-		output = append(output, learningToJSON(hit.Learning, hit.Reasons))
+func printContextResultJSON(result ContextResultJSON) error {
+	if result.Learnings == nil {
+		result.Learnings = []LearningJSON{}
 	}
-	return printJSON(output)
+	return printJSON(result)
+}
+
+func knowledgeHitsToLearningJSON(hits []model.KnowledgeHit) []LearningJSON {
+	out := make([]LearningJSON, 0, len(hits))
+	for _, hit := range hits {
+		out = append(out, learningToJSON(hit.Learning, hit.Reasons))
+	}
+	return out
+}
+
+func learningsToLearningJSON(learnings []model.Learning) []LearningJSON {
+	out := make([]LearningJSON, 0, len(learnings))
+	for _, l := range learnings {
+		out = append(out, learningToJSON(l, nil))
+	}
+	return out
+}
+
+// printContextLearningsJSON is the single envelope builder for ranked and unscoped JSON.
+func printContextLearningsJSON(items []LearningJSON, summaryOnly bool, page contextPage) error {
+	if summaryOnly {
+		for i := range items {
+			items[i].Detail = ""
+		}
+	}
+	return printContextResultJSON(ContextResultJSON{
+		Total:     page.Total,
+		Returned:  len(items),
+		Truncated: page.Truncated,
+		Limit:     page.Limit,
+		Learnings: items,
+	})
 }
 
 func printJSON(v any) error {
@@ -3374,16 +3498,18 @@ Run 'prog status' to see current state.
 
 When picking up a task:
 1. prog show <task>                         # Task details + retrieval commands
-2. prog context --task <task>               # Ranked learnings using task context
-   prog context --task <task> --summary     # Scan ranked one-line summaries first
+2. prog context --task <task>               # Ranked one-line summaries (capped)
+   prog context --id <learning-id>          # Full body of one selected learning
+   prog context --task <task> --full        # Full bodies only when needed
    prog context --task <task> --json        # Machine-readable ranked results
 
 If you don't have a task ID yet:
-  prog context -q "what you are investigating"  # Search by text
-  prog context -c X -c Y                       # Load known concepts
+  prog context -q "what you are investigating"  # Search by text (summaries)
+  prog context -c X -c Y                       # Load known concepts (summaries)
   prog context --id <learning-id>              # Inspect one selected learning
 
-Load context that's relevant to your task. Don't skip it, don't load everything.
+Defaults are summaries + cap 10. Use --full or --id for bodies; --all for
+unscoped corpus listing (still capped). Don't skip context, don't load everything.
 
 ## SESSION CLOSE PROTOCOL
 
@@ -3489,9 +3615,11 @@ prog edit <id> --dod "..."           # Set definition of done
 prog label <id> <name>               # Add label to task
 
 # Context retrieval
-prog context --task <id>       # Ranked learnings for a task
-prog context -c concept        # Load learnings for a concept
-prog context -c X --summary    # Scan one-liners first
+prog context --task <id>       # Ranked summaries for a task (default)
+prog context --task <id> --full # Ranked full bodies
+prog context -c concept        # Load summaries for a concept
+prog context --id <lrn-id>     # One learning, full body
+prog context --all             # Unscoped summaries (capped)
 prog concepts                  # List available concepts
 prog learn "summary" -c X --detail "explanation"  # Log with both parts
 prog learn supersede <old> <new>  # Replace a learning atomically
@@ -3549,10 +3677,11 @@ Compaction keeps the knowledge base high-signal and navigable.
 
 ## Phase 1: Discovery
 
-Scan all learning summaries grouped by concept:
+Scan learning summaries grouped by concept (explicit unscoped opt-in):
 
 ` + "```" + `bash
-prog context --summary   # All learnings, grouped by concept
+prog context --all            # Unscoped summaries, default cap 10
+prog context --all --limit 50 # Raise the cap when grooming
 ` + "```" + `
 
 Flag candidates:

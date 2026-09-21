@@ -17,9 +17,13 @@
   explicit match reasons; aggregate scores are internal only.
 - **Supersession**: `prog learn supersede <old-id> <new-id>` inserts a typed
   `supersedes` relation and marks the old learning stale in one transaction.
-- **CLI**: `prog context --task`, `-q`, `-c`, `--summary`, `--id`, `--include-stale`,
-  and `--json` map onto that model. Human and JSON output expose reasons and typed
-  evidence; they do not expose an unexplained score.
+- **CLI**: `prog context --task`, `-q`, `-c`, `--id`, `--full`, `--limit` (default 10),
+  `--all`, `--include-stale`, and `--json` map onto that model. Ranked and unscoped
+  listing default to one-line summaries; full bodies require `--full` or `--id`.
+  Bare unscoped listing is refused; `--all` is the explicit opt-in and still honors
+  the default cap unless `--limit` is raised. `--summary` remains accepted as a
+  compatibility no-op. Human and JSON output share selection semantics and expose
+  `total` / truncation clearly; they do not expose an unexplained score.
 
 ## Embedding decision
 

@@ -363,32 +363,38 @@ Agents retrieve context in phases to minimize token usage:
 └─────────────────────────────────────────────────────────────┘
                             ↓
 ┌─────────────────────────────────────────────────────────────┐
-│ PHASE 2: Scan                                               │
-│   prog context -c auth --summary                            │
-│     → auth: Token lifecycle, refresh, session coupling      │
-│     → lrn-abc: Token refresh has race condition             │
-│     → lrn-def: Auth tokens expire after 1 hour              │
+│ PHASE 2: Scan (default)                                     │
+│   prog context --task <id>                                  │
+│   prog context -c auth                                      │
+│     → one-line summaries + match reasons (cap 10)           │
 │                                                             │
-│   Agent sees concept summary, then learning one-liners      │
+│   Raise --limit or use --all only when needed               │
 └─────────────────────────────────────────────────────────────┘
                             ↓
 ┌─────────────────────────────────────────────────────────────┐
 │ PHASE 3: Load                                               │
 │   prog context --id lrn-abc                                 │
 │     → Full detail, files, linked task                       │
+│   prog context --task <id> --full                           │
+│     → Full bodies for the capped ranked set                 │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-Each phase filters, so agents only load what's actually relevant.
+Each phase filters, so agents only load what's actually relevant. Bare
+`prog context` (no scope) is refused; unscoped corpus listing requires `--all`.
 
 ### Commands
 
 | Command | Description |
 |---------|-------------|
 | `prog concepts` | List global concepts |
-| `prog context --task <id>` | Rank learnings for a task (title + description) |
-| `prog context -c <name>` | Retrieve learnings by concept(s) |
-| `prog context -q <query>` | Full-text search on learnings |
+| `prog context --task <id>` | Ranked summaries for a task (default cap 10) |
+| `prog context -c <name>` | Ranked summaries by concept(s) |
+| `prog context -q <query>` | Full-text search (summaries) |
+| `prog context --full` | Include detail bodies for the selected set |
+| `prog context --limit N` | Cap ranked/unscoped results (default 10) |
+| `prog context --all` | Unscoped corpus listing (still capped) |
+| `prog context --id <id>` | One learning, full body (bypasses cap) |
 | `prog learn <summary>` | Log a new learning |
 | `prog learn edit <id>` | Edit a learning's summary or detail |
 | `prog learn supersede <old> <new>` | Atomically replace a learning |
@@ -404,26 +410,35 @@ prog concepts
 # auth                  3  2h ago        Token lifecycle, refresh
 # database              2  1d ago        SQLite patterns
 
-# Rank learnings for the task you are about to start
+# Ranked summaries for the task you are about to start (default)
 prog context --task ts-abc123
 
-# Retrieve by concept (ranked; reasons shown)
+# Retrieve by concept (summaries + reasons; capped)
 prog context -c auth -c database
 
 # Full-text search when you don't know the concept
 prog context -q "race condition"
 
+# Full bodies only when needed
+prog context --task ts-abc123 --full
+prog context --id lrn-abc123
+
+# Unscoped corpus scan (explicit; still capped unless --limit raised)
+prog context --all
+prog context --all --limit 50
+
 # Include stale learnings for historical context
 prog context -c auth --include-stale
 
-# Machine-readable hits with match reasons and typed evidence
+# Machine-readable hits with match reasons, total, and truncation
 prog context --task ts-abc123 --json
 ```
 
 Ranked results explain *why* each learning matched (`exact_summary`,
 `concept_name`, `task_title`, `file_path`, …). Scores are internal ranking
 only and are not part of the CLI contract. Evidence uses path plus optional
-line ranges (`path:12`, `path:10-20`).
+line ranges (`path:12`, `path:10-20`). Text and JSON share selection
+semantics; JSON exposes `total`, `returned`, `truncated`, and `limit`.
 
 Learnings live in SQLite (`~/.prog/prog.db`). Markdown pages are not the
 canonical store; see `docs/context-engine-spec.md` for the superseded proposal
@@ -489,7 +504,8 @@ Run `prog compact` to get guided prompting for grooming. The workflow has two ph
 **Phase 1: Discovery**
 ```bash
 prog concepts --stats    # See concept distribution
-prog context --summary   # Scan all one-liners
+prog context --all       # Scan unscoped one-liners (capped)
+prog context --all --limit 50
 ```
 
 Flag candidates: redundant (similar summaries), stale (old or outdated), low quality (vague, not actionable), fragmented (should be combined).
@@ -497,7 +513,7 @@ Flag candidates: redundant (similar summaries), stale (old or outdated), low qua
 **Phase 2: Selection & Grooming**
 ```bash
 prog context --id lrn-abc123          # Load specific learning
-prog context -c auth --json           # Load all for a concept
+prog context -c auth --json           # Ranked summaries for a concept
 ```
 
 Then apply actions:
@@ -534,7 +550,7 @@ The context engine design draws from several projects and papers:
 
 - **[AgentFS](https://github.com/tursodatabase/agentfs)** — SQLite-based agent memory with audit trails. Validated our choice of SQLite for durability and the importance of linking learnings to tasks.
 
-- **[Dynamic Context Discovery](https://cursor.com/blog/dynamic-context-discovery)** (Cursor) — Two-phase retrieval with stubs in context, full content on-demand. Directly inspired our `--summary` → `--id` pattern for 46%+ token reduction.
+- **[Dynamic Context Discovery](https://cursor.com/blog/dynamic-context-discovery)** (Cursor) — Two-phase retrieval with stubs in context, full content on-demand. Directly inspired our summary-default → `--id` / `--full` pattern for 46%+ token reduction.
 
 - **[Everything is Context](https://arxiv.org/abs/2512.05470)** (Xu et al., 2024) — File-system abstraction for context engineering. Reinforced concepts-over-files approach and the value of structured knowledge retrieval.
 
