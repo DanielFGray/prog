@@ -95,7 +95,7 @@ func TestReadyJSON_WithItems(t *testing.T) {
 			if r.Parent != nil {
 				t.Errorf("parent = %v, want nil", r.Parent)
 			}
-			if r.LastActivityAt == "" {
+			if time.Time(r.LastActivityAt).IsZero() {
 				t.Error("last_activity_at is empty")
 			}
 		}
@@ -273,7 +273,7 @@ func TestShowJSON_FullDetail(t *testing.T) {
 		for _, l := range logs {
 			logEntries = append(logEntries, LogJSON{
 				Message:   l.Message,
-				CreatedAt: l.CreatedAt.Format(time.RFC3339),
+				CreatedAt: Timestamp(l.CreatedAt),
 			})
 		}
 		out := ItemShowJSON{
@@ -336,9 +336,9 @@ func TestShowJSON_FullDetail(t *testing.T) {
 	if len(result.Logs) != 1 || result.Logs[0].Message != "Started work" {
 		t.Errorf("logs = %v", result.Logs)
 	}
-	// Verify log timestamp is RFC3339
-	if _, err := time.Parse(time.RFC3339, result.Logs[0].CreatedAt); err != nil {
-		t.Errorf("log created_at not RFC3339: %q", result.Logs[0].CreatedAt)
+	// Unmarshal already rejects non-RFC3339 values; check one was present.
+	if time.Time(result.Logs[0].CreatedAt).IsZero() {
+		t.Error("log created_at missing")
 	}
 }
 
@@ -370,7 +370,7 @@ func TestShowJSON_EmptyArrayFields(t *testing.T) {
 		for _, l := range logs {
 			logEntries = append(logEntries, LogJSON{
 				Message:   l.Message,
-				CreatedAt: l.CreatedAt.Format(time.RFC3339),
+				CreatedAt: Timestamp(l.CreatedAt),
 			})
 		}
 		out := ItemShowJSON{
@@ -426,7 +426,7 @@ func TestShowJSON_KeepsRawLogEntries(t *testing.T) {
 	for _, l := range logs {
 		logEntries = append(logEntries, LogJSON{
 			Message:   l.Message,
-			CreatedAt: l.CreatedAt.Format(time.RFC3339),
+			CreatedAt: Timestamp(l.CreatedAt),
 		})
 	}
 	out := ItemShowJSON{ID: item.ID, Logs: logEntries}
@@ -589,5 +589,28 @@ func TestListJSON_NoLogsField(t *testing.T) {
 	}
 	if _, hasLogs := raw[0]["logs"]; hasLogs {
 		t.Error("list JSON should NOT contain 'logs' field")
+	}
+}
+
+func TestTimestamp_MarshalsAsUTCWholeSeconds(t *testing.T) {
+	// A time stored with a local offset and sub-second precision must marshal
+	// in the one form jq's fromdateiso8601 accepts.
+	cst := time.FixedZone("CST", -6*60*60)
+	in := time.Date(2026, 1, 9, 15, 12, 45, 123456789, cst)
+
+	b, err := json.Marshal(Timestamp(in))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if got, want := string(b), `"2026-01-09T21:12:45Z"`; got != want {
+		t.Errorf("marshal = %s, want %s", got, want)
+	}
+
+	var back Timestamp
+	if err := json.Unmarshal(b, &back); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !time.Time(back).Equal(in.Truncate(time.Second)) {
+		t.Errorf("round-trip changed the instant: got %v, want %v", time.Time(back), in)
 	}
 }

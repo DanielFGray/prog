@@ -336,9 +336,9 @@ Examples:
 					DefinitionOfDone: item.DefinitionOfDone,
 					Labels:           labels,
 					Dependencies:     deps,
-					CreatedAt:        item.CreatedAt.Format(time.RFC3339),
-					UpdatedAt:        item.UpdatedAt.Format(time.RFC3339),
-					LastActivityAt:   item.LastActivityAt.Format(time.RFC3339),
+					CreatedAt:        Timestamp(item.CreatedAt),
+					UpdatedAt:        Timestamp(item.UpdatedAt),
+					LastActivityAt:   Timestamp(item.LastActivityAt),
 				})
 			}
 			b, err := json.MarshalIndent(output, "", "  ")
@@ -470,7 +470,7 @@ Examples:
 			for _, l := range logs {
 				logEntries = append(logEntries, LogJSON{
 					Message:   l.Message,
-					CreatedAt: l.CreatedAt.Format(time.RFC3339),
+					CreatedAt: Timestamp(l.CreatedAt),
 				})
 			}
 			suggestedConcepts := conceptsToJSON(concepts)
@@ -486,9 +486,9 @@ Examples:
 				DefinitionOfDone:  item.DefinitionOfDone,
 				Labels:            labels,
 				Dependencies:      deps,
-				CreatedAt:         item.CreatedAt.Format(time.RFC3339),
-				UpdatedAt:         item.UpdatedAt.Format(time.RFC3339),
-				LastActivityAt:    item.LastActivityAt.Format(time.RFC3339),
+				CreatedAt:         Timestamp(item.CreatedAt),
+				UpdatedAt:         Timestamp(item.UpdatedAt),
+				LastActivityAt:    Timestamp(item.LastActivityAt),
 				Logs:              logEntries,
 				SuggestedConcepts: suggestedConcepts,
 				Context:           itemContextJSON(item.ID, concepts),
@@ -1174,10 +1174,11 @@ Example:
 		}
 		defer func() { _ = database.Close() }()
 
-		if err := database.SetProject(args[0], args[1]); err != nil {
+		project := model.NormalizeProject(args[1])
+		if err := database.SetProject(args[0], project); err != nil {
 			return err
 		}
-		fmt.Printf("%s is now in project %s\n", args[0], args[1])
+		fmt.Printf("%s is now in project %s\n", args[0], project)
 		return nil
 	},
 }
@@ -2590,6 +2591,8 @@ Examples:
 
 func init() {
 	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
+		// Every filter compares project names exactly, so normalize -p once here.
+		flagProject = model.NormalizeProject(flagProject)
 		return rejectDuplicateProjectFlags(os.Args[1:])
 	}
 
@@ -3086,16 +3089,16 @@ func printKnowledgeHits(hits []model.KnowledgeHit) {
 // Description is nil when the task has none, so consumers can treat it as
 // optional without conflating "no description" with an empty string.
 type ItemReadyJSON struct {
-	ID             string   `json:"id"`
-	Title          string   `json:"title"`
-	Description    *string  `json:"description"`
-	Priority       int      `json:"priority"`
-	Type           string   `json:"type"`
-	Project        string   `json:"project"`
-	Parent         *string  `json:"parent"`
-	Labels         []string `json:"labels"`
-	CreatedAt      string   `json:"created_at"`
-	LastActivityAt string   `json:"last_activity_at"`
+	ID             string    `json:"id"`
+	Title          string    `json:"title"`
+	Description    *string   `json:"description"`
+	Priority       int       `json:"priority"`
+	Type           string    `json:"type"`
+	Project        string    `json:"project"`
+	Parent         *string   `json:"parent"`
+	Labels         []string  `json:"labels"`
+	CreatedAt      Timestamp `json:"created_at"`
+	LastActivityAt Timestamp `json:"last_activity_at"`
 }
 
 // readyItemsToJSON maps ready items to their JSON serialization form.
@@ -3115,8 +3118,8 @@ func readyItemsToJSON(items []model.Item) []ItemReadyJSON {
 			Project:        item.Project,
 			Parent:         item.ParentID,
 			Labels:         labels,
-			CreatedAt:      item.CreatedAt.Format(time.RFC3339),
-			LastActivityAt: item.LastActivityAt.Format(time.RFC3339),
+			CreatedAt:      Timestamp(item.CreatedAt),
+			LastActivityAt: Timestamp(item.LastActivityAt),
 		})
 	}
 	return output
@@ -3144,9 +3147,9 @@ type ItemShowJSON struct {
 	DefinitionOfDone  *string                `json:"definition_of_done"`
 	Labels            []string               `json:"labels"`
 	Dependencies      []string               `json:"dependencies"`
-	CreatedAt         string                 `json:"created_at"`
-	UpdatedAt         string                 `json:"updated_at"`
-	LastActivityAt    string                 `json:"last_activity_at"`
+	CreatedAt         Timestamp              `json:"created_at"`
+	UpdatedAt         Timestamp              `json:"updated_at"`
+	LastActivityAt    Timestamp              `json:"last_activity_at"`
 	Logs              []LogJSON              `json:"logs"`
 	SuggestedConcepts []SuggestedConceptJSON `json:"suggested_concepts"`
 	Context           ItemContextJSON        `json:"context"`
@@ -3195,26 +3198,49 @@ func itemContextJSON(taskID string, concepts []model.Concept) ItemContextJSON {
 
 // ItemListJSON is the JSON serialization format for list (show schema minus logs).
 type ItemListJSON struct {
-	ID               string   `json:"id"`
-	Title            string   `json:"title"`
-	Type             string   `json:"type"`
-	Status           string   `json:"status"`
-	Priority         int      `json:"priority"`
-	Project          string   `json:"project"`
-	Parent           *string  `json:"parent"`
-	Description      string   `json:"description"`
-	DefinitionOfDone *string  `json:"definition_of_done"`
-	Labels           []string `json:"labels"`
-	Dependencies     []string `json:"dependencies"`
-	CreatedAt        string   `json:"created_at"`
-	UpdatedAt        string   `json:"updated_at"`
-	LastActivityAt   string   `json:"last_activity_at"`
+	ID               string    `json:"id"`
+	Title            string    `json:"title"`
+	Type             string    `json:"type"`
+	Status           string    `json:"status"`
+	Priority         int       `json:"priority"`
+	Project          string    `json:"project"`
+	Parent           *string   `json:"parent"`
+	Description      string    `json:"description"`
+	DefinitionOfDone *string   `json:"definition_of_done"`
+	Labels           []string  `json:"labels"`
+	Dependencies     []string  `json:"dependencies"`
+	CreatedAt        Timestamp `json:"created_at"`
+	UpdatedAt        Timestamp `json:"updated_at"`
+	LastActivityAt   Timestamp `json:"last_activity_at"`
+}
+
+// Timestamp is the type for every time field in JSON output. It marshals as
+// UTC RFC3339 with whole seconds ("2026-01-09T21:12:45Z") because that is the
+// only form jq's fromdateiso8601 accepts: it rejects numeric offsets and
+// fractional seconds, and a plain time.Time field would emit both.
+type Timestamp time.Time
+
+func (t Timestamp) MarshalJSON() ([]byte, error) {
+	return json.Marshal(time.Time(t).UTC().Format(time.RFC3339))
+}
+
+func (t *Timestamp) UnmarshalJSON(b []byte) error {
+	var s string
+	if err := json.Unmarshal(b, &s); err != nil {
+		return err
+	}
+	parsed, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return err
+	}
+	*t = Timestamp(parsed)
+	return nil
 }
 
 // LogJSON is the JSON serialization format for log entries.
 type LogJSON struct {
-	Message   string `json:"message"`
-	CreatedAt string `json:"created_at"`
+	Message   string    `json:"message"`
+	CreatedAt Timestamp `json:"created_at"`
 }
 
 // LearningSourceJSON is the JSON form of typed file evidence.
@@ -3260,7 +3286,7 @@ type LearningJSON struct {
 	Reasons   []MatchReasonJSON      `json:"reasons,omitempty"`
 	Relations []LearningRelationJSON `json:"relations,omitempty"`
 	TaskID    *string                `json:"task_id,omitempty"`
-	CreatedAt string                 `json:"created_at"`
+	CreatedAt Timestamp              `json:"created_at"`
 	Status    string                 `json:"status"`
 }
 
@@ -3272,7 +3298,7 @@ func learningToJSON(l model.Learning, reasons []model.MatchReason) LearningJSON 
 		Concepts:  l.Concepts,
 		Files:     l.Files,
 		TaskID:    l.TaskID,
-		CreatedAt: l.CreatedAt.Format(time.RFC3339),
+		CreatedAt: Timestamp(l.CreatedAt),
 		Status:    string(l.Status),
 	}
 	if lj.Concepts == nil {

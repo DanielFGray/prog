@@ -15,7 +15,7 @@ import (
 
 // SchemaVersion is the current schema version.
 // Increment this when adding new migrations.
-const SchemaVersion = 7
+const SchemaVersion = 8
 
 // baseSchema is the original schema (version 1).
 // New tables should be added via migrations, not here.
@@ -341,6 +341,25 @@ CREATE TABLE learning_relations (
 );
 
 CREATE INDEX idx_learning_relations_target ON learning_relations(target_id);
+`,
+	// Version 8: Trim whitespace from project names. Earlier versions stored -p
+	// verbatim, so " foo" became a separate project that "-p foo" never matched.
+	// Trims the same characters as model.NormalizeProject. Taken from upstream,
+	// renumbered from their v4: this fork already runs v4-v7, and learnings and
+	// concepts no longer carry a project column after v4, so only items, labels,
+	// and projects are trimmed here. Labels use OR IGNORE: a row whose trimmed
+	// (name, project) already exists is left as-is rather than failing the migration.
+	`
+UPDATE items SET project = TRIM(project, ' ' || char(9, 10, 11, 12, 13))
+	WHERE project != TRIM(project, ' ' || char(9, 10, 11, 12, 13));
+UPDATE OR IGNORE labels SET project = TRIM(project, ' ' || char(9, 10, 11, 12, 13))
+	WHERE project != TRIM(project, ' ' || char(9, 10, 11, 12, 13));
+INSERT OR IGNORE INTO projects (name, description, created_at, updated_at)
+	SELECT TRIM(name, ' ' || char(9, 10, 11, 12, 13)), description, created_at, updated_at
+	FROM projects
+	WHERE name != TRIM(name, ' ' || char(9, 10, 11, 12, 13))
+	  AND TRIM(name, ' ' || char(9, 10, 11, 12, 13)) != '';
+DELETE FROM projects WHERE name != TRIM(name, ' ' || char(9, 10, 11, 12, 13));
 `,
 }
 
